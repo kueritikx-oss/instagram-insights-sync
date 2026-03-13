@@ -4,6 +4,14 @@
 
 ---
 
+## セットアップを任せる場合（Claude Code 用）
+
+**まずこのファイルを開いて、上から順にすべて実行する**:  
+`CLAUDE_CODE_指示書_InstagramインサイトGitHubセットアップ.md`  
+（このフォルダ直下にあります。リポジトリ作成 → push → Secrets 登録 → 手動実行確認まで記載済み。）
+
+---
+
 ## 1. このフォルダを private リポジトリとして push する
 
 1. GitHub で **private** リポジトリを新規作成（例: `instagram-insights-sync`）
