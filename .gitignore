@@ -1,0 +1,13 @@
+# 認証ファイルは絶対にコミットしない
+auth/
+credentials.json
+token.json
+instagram_insights_config.json
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
