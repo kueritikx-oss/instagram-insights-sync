@@ -4,11 +4,20 @@
 
 ---
 
-## セットアップを任せる場合（Claude Code 用）
+## セットアップ状況（2026-03-13）
 
-**まずこのファイルを開いて、上から順にすべて実行する**:  
-`CLAUDE_CODE_指示書_InstagramインサイトGitHubセットアップ.md`  
-（このフォルダ直下にあります。リポジトリ作成 → push → Secrets 登録 → 手動実行確認まで記載済み。）
+| 項目 | 状態 |
+|------|------|
+| GitHub リポジトリ | **作成済み**: `kueritikx-oss/instagram-insights-sync` (Private) |
+| Secrets 4つ | **登録済み** |
+| push | **Claude Code で実行する** |
+| 手動テスト | **push 後に実行する** |
+
+### Claude Code に残りを任せる場合
+
+**このファイルを開いて指示に従う**:
+`CLAUDE_CODE_指示書_InstagramインサイトGitHubセットアップ.md`
+（push → 手動実行 → 確認 だけ。リポジトリ作成と Secrets は完了済み。）
 
 ---
 
