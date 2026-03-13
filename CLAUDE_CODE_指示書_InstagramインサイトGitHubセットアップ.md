@@ -1,10 +1,20 @@
 # Claude Code 用 完全指示書 — Instagram インサイト GitHub Actions セットアップ
 
+---
+
+## 依頼するときにコピペする文（Claude Code への指示）
+
+```
+このファイル（CLAUDE_CODE_指示書_InstagramインサイトGitHubセットアップ.md）の内容に従って、Instagram インサイトの GitHub Actions セットアップを完了してください。ステップ 1 からステップ 5 まで上から順に実行し、完了条件のチェックリストをすべて満たしたら「セットアップ完了」と報告してください。リポジトリ作成はブラウザか gh で行い、Secrets は GitHub の Settings → Secrets and variables → Actions から登録します。認証情報の値は、指示書に書いたファイルパスから取得してください。
+```
+
+---
+
 **目的**: この指示書の手順を**上から順にすべて実行**し、Instagram インサイト同期が「毎日 6:00 JST」に GitHub 上で自動実行される状態まで完了させる。
 
-**ワークスペースルート**:  
-`~/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事/事業 Cursor`  
-（または「事業 Cursor」が iCloud 内にある絶対パス）
+**ワークスペースルート**（この Mac での例）:  
+`/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事/事業 Cursor`  
+- 別の環境では「事業 Cursor」フォルダの絶対パスに読み替える。
 
 **scheduler フォルダの絶対パス**:  
 `<ワークスペースルート>/タッキー/02_SNS集客/instagram-insights-scheduler`
