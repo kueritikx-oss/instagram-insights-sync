@@ -1,29 +1,37 @@
 # 毎週月曜 JST 9:00 に Instagram トークンの有効期限をチェック。
 # 残り30日以内なら自動で60日延長し、GitHub Secret を更新する。
-# 残り7日以内の場合は GitHub Issue を作成してアラートする。
+# 延長失敗 or トークン無効時は GitHub Issue を作成してアラート。
+# セキュリティ: バリデーション付き、リトライ付き、SHA pinning。
 name: Refresh Instagram Token
 
 on:
   schedule:
-    # 毎週月曜 JST 9:00 = UTC 0:00
     - cron: '0 0 * * 1'
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
       - name: Check and refresh Instagram token
         env:
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           META_APP_ID: ${{ secrets.META_APP_ID }}
           META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
           GH_PAT: ${{ secrets.GH_PAT }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pip install pynacl requests > /dev/null 2>&1
           python3 - <<'PYEOF'
-import json, os, base64, sys
+import json, os, sys, base64, time
 import requests as req
 from datetime import datetime, timezone
 
@@ -37,72 +45,101 @@ print("=" * 50)
 print("🔍 Instagram トークン有効期限チェック")
 print("=" * 50)
 
-# 1. 現在のトークンの有効期限を確認
+# ===== Step 1: 現在のトークンの有効期限を確認 =====
 r = req.get("https://graph.facebook.com/v19.0/debug_token",
-            params={"input_token": token, "access_token": token})
+            params={"input_token": token, "access_token": token}, timeout=10)
 data = r.json().get("data", {})
-
 is_valid = data.get("is_valid", False)
 expires_at = data.get("expires_at", 0)
 
-if not is_valid:
-    print("❌ トークンは既に無効です。手動で再発行してください。")
-    # GitHub Issue を作成
+def create_issue(title, body):
+    """GitHub Issue を作成（同タイトルの open Issue があればスキップ）"""
     headers = {"Authorization": f"token {gh_pat}", "Accept": "application/vnd.github.v3+json"}
-    req.post(f"https://api.github.com/repos/{repo}/issues",
-             headers=headers,
-             json={"title": "🚨 Instagram トークンが無効です - 手動再発行が必要",
-                   "body": "Instagram access token が無効になりました。\n\n"
-                           "## 手順\n"
-                           "1. [Meta Graph API Explorer](https://developers.facebook.com/tools/explorer/) を開く\n"
-                           "2. App: 'Insights Auto Export' を選択\n"
-                           "3. `instagram_content_publish` スコープにチェック\n"
-                           "4. 'Generate Access Token' をクリック\n"
-                           "5. ローカルの `instagram_insights_config.json` を更新\n"
-                           "6. `python3 utils/sync_secrets_to_github.py` を実行\n",
-                   "labels": ["urgent"]})
+    existing = req.get(f"https://api.github.com/repos/{repo}/issues?state=open&labels=auto-alert",
+                       headers=headers).json()
+    if any(title in i.get("title", "") for i in existing):
+        print(f"既存のアラートIssueあり。スキップ: {title}")
+        return
+    req.post(f"https://api.github.com/repos/{repo}/issues", headers=headers,
+             json={"title": title, "body": body, "labels": ["auto-alert"]})
+    print(f"🚨 Issue作成: {title}")
+
+if not is_valid:
+    print("❌ トークンは既に無効です。")
+    create_issue(
+        "🚨 Instagram トークンが無効 - 手動再発行が必要",
+        "## 手順\n"
+        "1. [Meta Graph API Explorer](https://developers.facebook.com/tools/explorer/) を開く\n"
+        "2. App: 'Insights Auto Export' を選択\n"
+        "3. `instagram_content_publish` にチェック → Generate Access Token\n"
+        "4. `instagram_insights_config.json` を更新\n"
+        "5. `python3 utils/sync_secrets_to_github.py` を実行\n"
+    )
     sys.exit(1)
 
-if expires_at:
-    expiry = datetime.fromtimestamp(expires_at, tz=timezone.utc)
-    now = datetime.now(timezone.utc)
-    days_left = (expiry - now).total_seconds() / 86400
-    print(f"📅 有効期限: {expiry.strftime('%Y-%m-%d')} (残り {days_left:.0f} 日)")
-else:
+if not expires_at:
     print("✅ 無期限トークン。更新不要。")
     sys.exit(0)
 
-# 2. 残り30日以内なら自動延長
+expiry = datetime.fromtimestamp(expires_at, tz=timezone.utc)
+now = datetime.now(timezone.utc)
+days_left = (expiry - now).total_seconds() / 86400
+print(f"📅 有効期限: {expiry.strftime('%Y-%m-%d')} (残り {days_left:.0f} 日)")
+
 if days_left > 30:
     print(f"✅ 残り {days_left:.0f} 日。更新不要。")
     sys.exit(0)
 
+# ===== Step 2: 自動延長（リトライ付き） =====
 print(f"\n⚠️ 残り {days_left:.0f} 日。自動延長を実行...")
 
-# Long-lived token を新しい Long-lived token に交換
-r = req.get("https://graph.facebook.com/v19.0/oauth/access_token",
-            params={"grant_type": "fb_exchange_token",
-                    "client_id": app_id,
-                    "client_secret": app_secret,
-                    "fb_exchange_token": token})
-result = r.json()
+new_token = None
+for attempt in range(3):
+    try:
+        r = req.get("https://graph.facebook.com/v19.0/oauth/access_token",
+                     params={"grant_type": "fb_exchange_token",
+                             "client_id": app_id,
+                             "client_secret": app_secret,
+                             "fb_exchange_token": token},
+                     timeout=15)
+        result = r.json()
+        if "access_token" in result:
+            new_token = result["access_token"]
+            print(f"✅ 新しいトークン取得成功 (attempt {attempt + 1})")
+            break
+        elif r.status_code >= 500:
+            wait = 10 * (3 ** attempt)
+            print(f"⚠️ サーバーエラー {r.status_code}。{wait}秒後にリトライ...")
+            time.sleep(wait)
+        else:
+            print(f"❌ トークン延長失敗 (HTTP {r.status_code}): {result}")
+            break
+    except req.exceptions.Timeout:
+        wait = 10 * (3 ** attempt)
+        print(f"⚠️ タイムアウト。{wait}秒後にリトライ...")
+        time.sleep(wait)
 
-if "access_token" not in result:
-    print(f"❌ トークン延長失敗: {result}")
-    # 残り7日以内なら Issue 作成
+if not new_token:
+    msg = f"自動延長が失敗しました。残り {days_left:.0f} 日。\n\nエラー: {result if 'result' in dir() else 'timeout'}"
     if days_left < 7:
-        headers = {"Authorization": f"token {gh_pat}", "Accept": "application/vnd.github.v3+json"}
-        req.post(f"https://api.github.com/repos/{repo}/issues",
-                 headers=headers,
-                 json={"title": f"🔴 Instagram トークン残り {days_left:.0f} 日 - 自動延長失敗",
-                       "body": f"自動延長が失敗しました。手動で再発行してください。\n\nエラー: {result}"})
+        create_issue(f"🔴 Instagram トークン残り {days_left:.0f} 日 - 自動延長失敗", msg)
+    else:
+        create_issue(f"🟡 Instagram トークン自動延長失敗（残り {days_left:.0f} 日）", msg)
     sys.exit(1)
 
-new_token = result["access_token"]
-new_expires = result.get("expires_in", 0)
-print(f"✅ 新しいトークン取得成功（有効期間: {new_expires // 86400} 日）")
+# ===== Step 3: 新トークンをバリデーション =====
+print("🔍 新しいトークンをバリデーション中...")
+r = req.get("https://graph.facebook.com/v19.0/me",
+            params={"access_token": new_token}, timeout=10)
+if r.status_code != 200:
+    print(f"❌ 新トークンのバリデーション失敗: {r.json()}")
+    print("元のSecretを保持。書き戻しを中止。")
+    create_issue("🟡 Instagram トークン延長: バリデーション失敗",
+                 f"新トークンを取得したが、バリデーションAPIコールが失敗。\n手動確認が必要。")
+    sys.exit(1)
+print("✅ バリデーション成功")
 
-# 3. GitHub Secret を更新
+# ===== Step 4: GitHub Secret を更新 =====
 from nacl import encoding, public
 
 headers = {"Authorization": f"token {gh_pat}", "Accept": "application/vnd.github.v3+json"}
@@ -123,9 +160,9 @@ else:
     print(f"❌ Secret 更新失敗: {r.status_code}")
     sys.exit(1)
 
-# 4. 新しいトークンの有効期限を確認
+# ===== Step 5: 新トークンの有効期限を確認 =====
 r2 = req.get("https://graph.facebook.com/v19.0/debug_token",
-             params={"input_token": new_token, "access_token": new_token})
+             params={"input_token": new_token, "access_token": new_token}, timeout=10)
 new_data = r2.json().get("data", {})
 new_exp = new_data.get("expires_at", 0)
 if new_exp:
