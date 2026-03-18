@@ -1,5 +1,6 @@
 # 1日4回（JST 0:00, 6:00, 12:00, 18:00）Instagram インサイトを取得し、スプレッドシートに反映する。
 # Mac がなくても実行される。最大ズレ6時間以内で24h後・7日後データを自動記録。
+# 実行後に Google Token を自動で Secret に書き戻し、トークン期限切れを防止する。
 name: Sync Instagram Insights
 
 on:
@@ -28,6 +29,8 @@ jobs:
           mkdir -p auth
           printf '%s' "$GOOGLE_CREDENTIALS_JSON" > auth/credentials.json
           printf '%s' "$GOOGLE_TOKEN_JSON" > auth/token.json
+          # 更新前のハッシュを記録（後で変更検知に使う）
+          sha256sum auth/token.json > /tmp/token_hash_before.txt
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -39,3 +42,43 @@ jobs:
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
           PYTHONUNBUFFERED: '1'
         run: python sync_instagram_insights.py
+
+      - name: Auto-save refreshed Google Token to Secret
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          # token.json が更新されていたら Secret に書き戻す
+          if [ -f auth/token.json ]; then
+            sha256sum auth/token.json > /tmp/token_hash_after.txt
+            if ! diff -q /tmp/token_hash_before.txt /tmp/token_hash_after.txt > /dev/null 2>&1; then
+              echo "🔄 Google Token が更新された。Secret に書き戻し中..."
+              pip install pynacl > /dev/null 2>&1
+              python3 - <<'PYEOF'
+import json, os, base64, requests
+from nacl import encoding, public
+
+token = os.environ["GH_PAT"]
+repo = "kueritikx-oss/instagram-insights-sync"
+headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+r = requests.get(f"https://api.github.com/repos/{repo}/actions/secrets/public-key", headers=headers)
+key_data = r.json()
+pub_key = public.PublicKey(key_data["key"].encode(), encoding.Base64Encoder())
+
+with open("auth/token.json") as f:
+    value = f.read()
+sealed = public.SealedBox(pub_key)
+encrypted = base64.b64encode(sealed.encrypt(value.encode())).decode()
+
+r = requests.put(
+    f"https://api.github.com/repos/{repo}/actions/secrets/GOOGLE_TOKEN_JSON",
+    headers=headers,
+    json={"encrypted_value": encrypted, "key_id": key_data["key_id"]}
+)
+print(f"{'✅' if r.status_code in (201, 204) else '❌'} GOOGLE_TOKEN_JSON Secret 更新: {r.status_code}")
+PYEOF
+            else
+              echo "✅ Google Token 変更なし。スキップ。"
+            fi
+          fi
