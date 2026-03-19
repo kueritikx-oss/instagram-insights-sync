@@ -17,12 +17,9 @@ name: Auto Post Instagram
 
 on:
   schedule:
-    # 毎日 JST 7:00-22:00 の間、15分ごとに実行
-    # UTC: 22:00-13:00 (前日22時〜当日13時)
+    # 15分ごとに実行（24h稼働、投稿なければ15秒で終了）
     # GitHub Actionsのcronは±20分の誤差があるため、ウィンドウ方式で吸収
-    - cron: '7,22,37,52 22-23 * * *'   # JST 7:07-8:52
-    - cron: '7,22,37,52 0-12 * * *'    # JST 9:07-21:52
-    - cron: '7 13 * * *'               # JST 22:07 (最終)
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       force_post:
