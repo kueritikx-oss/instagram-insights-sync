@@ -436,12 +436,19 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
 
 def count_posts_today(rows):
     """Count how many posts were already made today."""
-    today = datetime.now(JST).strftime("%Y-%m-%d")
+    now = datetime.now(JST)
+    today_md = f"{now.month}/{now.day}"         # "3/19"
+    today_full = now.strftime("%Y-%m-%d")        # "2026-03-19"
+    today_slash = now.strftime("%Y/%m/%d")       # "2026/03/19"
     count = 0
     for row in rows:
         status = row[COL_STATUS] if len(row) > COL_STATUS else ""
-        date = row[COL_DATE] if len(row) > COL_DATE else ""
-        if status == "posted" and today in date:
+        if status != "posted":
+            continue
+        date = (row[COL_DATE] if len(row) > COL_DATE else "").strip()
+        if date in (today_md, today_full, today_slash):
+            count += 1
+        elif f"/{now.month}/{now.day}" in date or f"-{now.month:02d}-{now.day:02d}" in date:
             count += 1
     return count
 
