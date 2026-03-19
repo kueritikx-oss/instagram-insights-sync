@@ -33,7 +33,7 @@ import requests
 # ---------------------------------------------------------------------------
 JST = timezone(timedelta(hours=9))
 GRAPH_API_VERSION = "v21.0"
-GRAPH_API_BASE = f"https://graph.instagram.com/{GRAPH_API_VERSION}"
+GRAPH_API_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 
 SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 SHEET_NAME = "Instagram投稿毎データ"
