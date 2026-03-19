@@ -311,29 +311,58 @@ def post_carousel(access_token, ig_user_id, image_urls, caption):
 # Schedule logic
 # ---------------------------------------------------------------------------
 def parse_schedule_time(date_str, time_str):
-    """Parse date + time from spreadsheet into JST datetime."""
+    """Parse date + time from spreadsheet into JST datetime.
+
+    Handles multiple date formats:
+    - YYYY/MM/DD, YYYY-MM-DD (full)
+    - M/D, MM/DD (no year → assume current year)
+    - M/D/YYYY (US-style)
+
+    Handles multiple time formats:
+    - HH:MM, H:MM
+    - HHMM (no colon)
+    - HH：MM (full-width colon)
+    """
     if not date_str or not time_str:
         return None
 
-    # Normalize date (could be YYYY/MM/DD or YYYY-MM-DD)
-    date_str = date_str.strip().replace("/", "-")
-
-    # Normalize time (could be HH:MM, HHMM, H:MM, etc.)
+    date_str = date_str.strip()
     time_str = time_str.strip().replace("：", ":")
+
+    # Normalize time
     if ":" not in time_str and len(time_str) >= 3:
         time_str = time_str[:-2] + ":" + time_str[-2:]
 
+    # Parse time
     try:
-        dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-        return dt.replace(tzinfo=JST)
-    except ValueError:
-        try:
-            # Try date-only
-            dt = datetime.strptime(date_str, "%Y-%m-%d")
-            h, m = int(time_str.split(":")[0]), int(time_str.split(":")[1])
-            return dt.replace(hour=h, minute=m, tzinfo=JST)
-        except (ValueError, IndexError):
+        parts = time_str.split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except (ValueError, IndexError):
+        return None
+
+    # Parse date
+    date_str = date_str.replace("-", "/")
+    parts = date_str.split("/")
+
+    try:
+        if len(parts) == 3 and len(parts[0]) == 4:
+            # YYYY/MM/DD
+            year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 3 and len(parts[2]) == 4:
+            # MM/DD/YYYY
+            month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
+        elif len(parts) == 2:
+            # M/D (no year) → assume current year
+            month, day = int(parts[0]), int(parts[1])
+            year = datetime.now(JST).year
+        else:
             return None
+
+        dt = datetime(year, month, day, hour, minute, tzinfo=JST)
+        return dt
+    except (ValueError, IndexError):
+        return None
 
 
 def find_due_posts(rows, window_minutes=20, force_post_num=None):
