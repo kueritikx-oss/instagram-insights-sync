@@ -10,6 +10,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -56,6 +59,12 @@ jobs:
             echo "🔄 Google Token が更新された。バリデーション→Secret書き戻し..."
             python scripts/save_google_token.py
           fi
+
+      - name: Trigger Auto Post check (redundant safety net)
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: gh workflow run auto-post-instagram.yml --repo kueritikx-oss/instagram-insights-sync 2>/dev/null || echo "⚠️ Auto Post trigger skipped"
 
       - name: Alert on failure
         if: failure()
