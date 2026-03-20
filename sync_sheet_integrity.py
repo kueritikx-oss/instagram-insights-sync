@@ -69,7 +69,7 @@ AUTO_META = {
 
 DEFAULT_BASE_DIR = Path(
     "/Users/taiki/Library/Mobile Documents/"
-    "com~apple~CloudDocs/MacDocuments/01_仕事"
+    "com~apple~CloudDocs/MacDocuments/01_事業"
 )
 
 

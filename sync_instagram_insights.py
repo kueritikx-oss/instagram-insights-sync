@@ -28,7 +28,7 @@ from googleapiclient.discovery import build
 
 # ========== パス・スプレッドシート（sync_sheet_thumbnails と共通） ==========
 DEFAULT_BASE_DIR = Path(
-    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事"
+    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_事業"
 )
 BASE_DIR = Path(os.environ.get("INSTAGRAM_INSIGHTS_BASE_DIR", str(DEFAULT_BASE_DIR))).expanduser()
 GOOGLE_AUTH_DIR = Path(

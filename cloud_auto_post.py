@@ -70,7 +70,7 @@ def get_instagram_config():
         # Local fallback
         config_path = os.environ.get("INSTAGRAM_CONFIG_PATH",
             os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/"
-                               "MacDocuments/01_仕事/事業 Cursor/タッキー/"
+                               "MacDocuments/01_事業/事業 Cursor/タッキー/"
                                "02_SNS集客/instagram-auto-post/instagram_insights_config.json"))
         if os.path.exists(config_path):
             with open(config_path) as f:
@@ -97,7 +97,7 @@ def get_sheets_service():
         # Local fallback
         token_path = os.environ.get("GOOGLE_TOKEN_PATH",
             os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/"
-                               "MacDocuments/01_仕事/事業 Cursor/タッキー/"
+                               "MacDocuments/01_事業/事業 Cursor/タッキー/"
                                "02_SNS集客/instagram-auto-post/token.json"))
         with open(token_path) as f:
             info = json.load(f)

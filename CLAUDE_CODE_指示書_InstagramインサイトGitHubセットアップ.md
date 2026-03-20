@@ -32,7 +32,7 @@
 ## ワークスペース情報
 
 **ワークスペースルート**:
-`/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事/事業 Cursor`
+`/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_事業/事業 Cursor`
 
 **scheduler フォルダの絶対パス**:
 `<ワークスペースルート>/タッキー/02_SNS集客/instagram-insights-scheduler`
@@ -47,7 +47,7 @@
 ### 1-1. scheduler フォルダに移動
 
 ```bash
-cd "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事/事業 Cursor/タッキー/02_SNS集客/instagram-insights-scheduler"
+cd "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_事業/事業 Cursor/タッキー/02_SNS集客/instagram-insights-scheduler"
 ```
 
 ### 1-2. リモートを設定して push
