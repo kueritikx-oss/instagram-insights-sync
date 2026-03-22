@@ -332,13 +332,16 @@ def check_and_fix(sheet_rows, ig_posts):
                     })
             else:
                 # 本当に未投稿 → 日付が過去なら日付をクリア
+                # ただし当日の投稿は絶対に消さない（時刻がまだ来ていない可能性）
+                # 翌日 00:00 JST を過ぎて初めて「未投稿」と判定する
                 try:
                     # 日付パース（M/D形式）
                     month, day = date_val.split("/")
                     post_date = datetime(2026, int(month), int(day), tzinfo=JST)
                     now = datetime.now(JST)
-                    if post_date < now - timedelta(hours=6):
-                        # 6時間以上前の予定 → 投稿されなかった
+                    # 投稿予定日の翌日 00:00 JST を過ぎたら未投稿と判定
+                    deadline = post_date + timedelta(days=1)
+                    if now >= deadline:
                         summary["unposted_cleared"] += 1
                         summary["details"].append(
                             f"#{post_num} (Row{sheet_row}): 未投稿 → 日付クリア (予定: {date_val})"
