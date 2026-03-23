@@ -3,14 +3,18 @@
 Instagram × スプレッドシート 整合性チェック & 自動修正
 
 Instagram Graph APIの実投稿データを正として、
-スプレッドシートの内容（ファイル名・意図・キャプション等）を自動修正する。
+スプレッドシートの URL・日付・時刻 等を自動修正する。
+
+※ 以前は「定型キャプション＝自動投稿」と判定して E/F/I〜 を
+  自動投稿（@tackey）/ 自動 で上書きしていたが、
+  通常カルーセルも同じキャプション先頭のため誤判定が多発したため廃止。
+  ファイル名・投稿種別の補完はローカル utils の audit_instagram_sheet.py を使用する。
 
 GitHub Actions で定期実行（毎日1回）。
 """
 
 import os
 import json
-import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -28,44 +32,12 @@ HEADER_ROW = 3       # ヘッダー行（1-indexed）
 DATA_START_ROW = 4   # データ開始行（1-indexed）
 JST = timezone(timedelta(hours=9))
 
-# カラムインデックス（0-indexed）
+# カラムインデックス（0-indexed）— 本スクリプトが読み書きする列のみ
 COL_DATE = 0       # A: 日付
-COL_THUMB = 1      # B: サムネ
 COL_NUMBER = 2     # C: 番号
 COL_TIME = 3       # D: 時刻
-COL_FILENAME = 4   # E: ファイル名
-COL_POST_TYPE = 5  # F: 投稿種別
-COL_FORMAT = 6     # G: 形式
 COL_URL = 7        # H: URL
-COL_INTENT = 8     # I: 投稿の意図
-COL_CONTENT = 9    # J: 内容
-COL_MEMO = 10      # K: 備考
 COL_CAPTION = 11   # L: キャプション
-COL_LF8 = 12       # M: どんな欲求LF8
-COL_EMOTION = 13   # N: 感情トリガー
-COL_METRIC = 14    # O: 成果指標
-COL_ANALYSIS = 20  # U: 考察・仮説
-COL_NEXT = 21      # V: 次の投稿に活かすポイント
-
-# 自動投稿の判定キーワード
-AUTO_POST_MARKERS = [
-    "@tackey_clear_skincare",
-    "【洗顔・保湿をやめて綺麗な肌へ】",
-]
-
-# 自動投稿のメタデータ（統一値）
-AUTO_META = {
-    COL_FILENAME: "自動投稿（@tackey）",
-    COL_POST_TYPE: "自動",
-    COL_INTENT: "自動投稿（プロフィール誘導）",
-    COL_CONTENT: "洗顔・保湿をやめて綺麗な肌へ（定型プロモ）",
-    COL_MEMO: "自動投稿（インサイトスケジューラー）",
-    COL_LF8: "①生存・健康",
-    COL_EMOTION: "共感・希望",
-    COL_METRIC: "",
-    COL_ANALYSIS: "",
-    COL_NEXT: "",
-}
 
 DEFAULT_BASE_DIR = Path(
     "/Users/taiki/Library/Mobile Documents/"
@@ -152,16 +124,6 @@ def fetch_all_instagram_posts(access_token, ig_user_id, max_pages=10):
     return all_posts
 
 
-def is_auto_post(caption):
-    """自動投稿かどうか判定"""
-    if not caption:
-        return False
-    for marker in AUTO_POST_MARKERS:
-        if marker in caption[:50]:
-            return True
-    return False
-
-
 def parse_instagram_posts(posts):
     """投稿データをpermalink→詳細の辞書に変換"""
     result = {}
@@ -187,7 +149,6 @@ def parse_instagram_posts(posts):
             "jst_time": jst_dt.strftime("%-H:%M") if jst_dt else "",
             "likes": p.get("like_count", 0),
             "comments": p.get("comments_count", 0),
-            "is_auto": is_auto_post(caption),
             "permalink": permalink,
         }
     return result
@@ -230,7 +191,6 @@ def check_and_fix(sheet_rows, ig_posts):
     updates = []
     summary = {
         "checked": 0,
-        "auto_fixed": 0,
         "url_added": 0,
         "date_fixed": 0,
         "unposted_cleared": 0,
@@ -247,8 +207,6 @@ def check_and_fix(sheet_rows, ig_posts):
         summary["checked"] += 1
         url_raw = get_cell(row, COL_URL)
         date_val = get_cell(row, COL_DATE)
-        filename = get_cell(row, COL_FILENAME)
-
         # URLを正規化
         url_clean = ""
         if url_raw:
@@ -258,24 +216,7 @@ def check_and_fix(sheet_rows, ig_posts):
         if url_clean and url_clean in ig_posts:
             ig = ig_posts[url_clean]
 
-            # 1a: 自動投稿なのに個別コンテンツ名が入っている
-            if ig["is_auto"] and filename and "自動投稿" not in filename:
-                detail = f"#{post_num} (Row{sheet_row}): 自動投稿に修正 (旧: {filename[:30]})"
-                summary["details"].append(detail)
-                summary["auto_fixed"] += 1
-
-                for col_idx, val in AUTO_META.items():
-                    updates.append({
-                        "range": cell_ref(col_idx, sheet_row),
-                        "values": [[val]],
-                    })
-                # キャプションを実際のものに
-                updates.append({
-                    "range": cell_ref(COL_CAPTION, sheet_row),
-                    "values": [[ig["caption"]]],
-                })
-
-            # 1b: 日付・時刻がInstagramと異なる
+            # 日付・時刻がInstagramと異なる
             if ig["jst_date"] and date_val and ig["jst_date"] != date_val:
                 summary["date_fixed"] += 1
                 summary["details"].append(
@@ -303,11 +244,10 @@ def check_and_fix(sheet_rows, ig_posts):
             if caption_in_sheet:
                 # キャプション先頭30文字で一致を探す
                 cap_prefix = caption_in_sheet[:30].replace("\n", " ")
-                for link, ig in ig_posts.items():
+                for _, ig in ig_posts.items():
                     ig_cap_prefix = ig["caption"][:30].replace("\n", " ")
                     if cap_prefix and cap_prefix == ig_cap_prefix:
                         matched_ig = ig
-                        matched_link = link
                         break
 
             if matched_ig:
@@ -388,7 +328,6 @@ def main():
     # 結果表示
     print()
     print(f"チェック対象: {summary['checked']}行")
-    print(f"  自動投稿修正: {summary['auto_fixed']}件")
     print(f"  URL追加: {summary['url_added']}件")
     print(f"  日付修正: {summary['date_fixed']}件")
     print(f"  未投稿クリア: {summary['unposted_cleared']}件")
