@@ -33,7 +33,7 @@ from googleapiclient.discovery import build
 
 # ========== パス・認証 ==========
 DEFAULT_BASE_DIR = Path(
-    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事"
+    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_事業"
 )
 BASE_DIR = Path(os.environ.get("INSTAGRAM_INSIGHTS_BASE_DIR", str(DEFAULT_BASE_DIR))).expanduser()
 GOOGLE_AUTH_DIR = Path(
@@ -239,22 +239,35 @@ def ensure_tab(sheets_service, sheet_id: str, tab_name: str, headers: List[str])
 
 def find_row_by_date(
     sheets_service, sheet_id: str, tab_name: str, target_date: datetime,
-    parse_func=parse_jp_date, years_to_try=(2026, 2025, 2024),
 ) -> Optional[int]:
-    """A列の日付文字列からtarget_dateに一致する行番号(1-based)を返す"""
+    """A列の日付文字列からtarget_dateに一致する行番号(1-based)を返す。
+    逆順検索で最新年を優先。曜日も検証して誤マッチを防ぐ。"""
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
     ).execute()
     values = resp.get("values", [])
-    for i, row in enumerate(values):
+    target_weekday = WEEKDAY_JP[target_date.weekday()]
+
+    # 逆順検索（最新行 = 最新年 を優先）
+    for i in range(len(values) - 1, -1, -1):
+        row = values[i]
         if not row:
             continue
-        cell = row[0]
-        for year in years_to_try:
-            parsed = parse_func(cell, year)
-            if parsed and parsed.month == target_date.month and parsed.day == target_date.day:
-                # 年の判定: 行番号が大きいほど新しい年
+        cell = row[0].strip()
+        # M/D を抽出
+        m = re.search(r"(\d{1,2})/(\d{1,2})", cell)
+        if not m:
+            continue
+        month = int(m.group(1))
+        day = int(m.group(2))
+        if month == target_date.month and day == target_date.day:
+            # 曜日も一致するか確認（" 3/25 水" の "水" 部分）
+            weekday_match = re.search(r"[月火水木金土日]", cell)
+            if weekday_match and weekday_match.group() == target_weekday:
                 return i + 1  # 1-based
+            # 曜日がない場合は月日一致だけで返す
+            if not weekday_match:
+                return i + 1
     return None
 
 
@@ -359,21 +372,16 @@ def fetch_simple(
 
 
 def fetch_follower_count(
-    access_token: str, ig_user_id: str, since_ts: int, until_ts: int,
+    access_token: str, ig_user_id: str,
 ) -> Optional[int]:
-    url = f"{GRAPH_API_BASE}/{ig_user_id}/insights"
-    params = {
-        "metric": "follower_count", "period": "day",
-        "since": since_ts, "until": until_ts, "access_token": access_token,
-    }
+    """フォロワー数を直接フィールドから取得（insights endpoint は不正確なため）"""
+    url = f"{GRAPH_API_BASE}/{ig_user_id}"
+    params = {"fields": "followers_count", "access_token": access_token}
     try:
         r = requests.get(url, params=params, timeout=30)
         if r.status_code != 200:
             return None
-        for item in r.json().get("data", []):
-            values = item.get("values", [])
-            if values:
-                return values[-1].get("value", 0)
+        return r.json().get("followers_count", 0)
     except requests.RequestException:
         pass
     return None
@@ -424,8 +432,8 @@ def collect_daily_data(
     reach_total = reach_follower + reach_non_follower + reach_bd.get("UNKNOWN", 0)
     print("reach ", end="", flush=True)
 
-    # views (follower_type)
-    views_bd = fetch_with_breakdown(access_token, ig_user_id, "views", "follower_type", since_ts, until_ts)
+    # views (follow_type — ※ follower_type はエラー。follow_type が正しい)
+    views_bd = fetch_with_breakdown(access_token, ig_user_id, "views", "follow_type", since_ts, until_ts)
     views_follower = views_bd.get("FOLLOWER", 0)
     views_non_follower = views_bd.get("NON_FOLLOWER", 0)
     views_total = views_follower + views_non_follower + views_bd.get("UNKNOWN", 0)
@@ -438,8 +446,8 @@ def collect_daily_data(
     follows_net = follows - unfollows
     print("follows ", end="", flush=True)
 
-    # follower_count
-    follower_count = fetch_follower_count(access_token, ig_user_id, since_ts, until_ts) or 0
+    # follower_count（直接フィールド取得 — insights endpointは不正確）
+    follower_count = fetch_follower_count(access_token, ig_user_id) or 0
 
     # accounts_engaged
     accounts_engaged = fetch_simple(access_token, ig_user_id, "accounts_engaged", since_ts, until_ts) or 0
@@ -479,25 +487,27 @@ def collect_daily_data(
         "follows_net": follows_net,
         "follower_count": follower_count,
         "accounts_engaged": accounts_engaged,
-        "interactions_feed": interactions_bd.get("FEED", 0),
-        "interactions_reels": interactions_bd.get("REELS", 0),
+        # ※ APIは media_product_type を POST/CAROUSEL_CONTAINER/REEL/STORY で返す
+        #    POST + CAROUSEL_CONTAINER = Feed相当、REEL = Reels相当
+        "interactions_feed": interactions_bd.get("POST", 0) + interactions_bd.get("CAROUSEL_CONTAINER", 0),
+        "interactions_reels": interactions_bd.get("REEL", 0),
         "interactions_story": interactions_bd.get("STORY", 0),
-        "likes_feed": likes_bd.get("FEED", 0),
-        "likes_reels": likes_bd.get("REELS", 0),
-        "saves_feed": saves_bd.get("FEED", 0),
-        "saves_reels": saves_bd.get("REELS", 0),
-        "shares_feed": shares_bd.get("FEED", 0),
-        "shares_reels": shares_bd.get("REELS", 0),
+        "likes_feed": likes_bd.get("POST", 0) + likes_bd.get("CAROUSEL_CONTAINER", 0),
+        "likes_reels": likes_bd.get("REEL", 0),
+        "saves_feed": saves_bd.get("POST", 0) + saves_bd.get("CAROUSEL_CONTAINER", 0),
+        "saves_reels": saves_bd.get("REEL", 0),
+        "shares_feed": shares_bd.get("POST", 0) + shares_bd.get("CAROUSEL_CONTAINER", 0),
+        "shares_reels": shares_bd.get("REEL", 0),
         "shares_story": shares_bd.get("STORY", 0),
-        "comments_feed": comments_bd.get("FEED", 0),
-        "comments_reels": comments_bd.get("REELS", 0),
+        "comments_feed": comments_bd.get("POST", 0) + comments_bd.get("CAROUSEL_CONTAINER", 0),
+        "comments_reels": comments_bd.get("REEL", 0),
         "taps_total": taps_total,
         "taps_email": taps_bd.get("EMAIL", 0),
         "taps_call": taps_bd.get("CALL", 0),
         "taps_bio": taps_bd.get("BOOK_NOW", 0) + taps_bd.get("UNDEFINED", 0),
         "reposts": reposts,
-        "reach_feed": reach_mpt.get("FEED", 0),
-        "reach_reels": reach_mpt.get("REELS", 0),
+        "reach_feed": reach_mpt.get("POST", 0) + reach_mpt.get("CAROUSEL_CONTAINER", 0),
+        "reach_reels": reach_mpt.get("REEL", 0),
         "reach_story": reach_mpt.get("STORY", 0),
     }
 
