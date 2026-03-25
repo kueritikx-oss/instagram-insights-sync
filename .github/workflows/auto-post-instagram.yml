@@ -74,13 +74,17 @@ jobs:
           if [ -n "${{ inputs.force_post }}" ]; then
             ARGS="--force ${{ inputs.force_post }}"
           fi
-          python cloud_auto_post.py --window 20 $ARGS
+          python cloud_auto_post.py --window 45 $ARGS
 
       - name: Auto-save refreshed Google Token
-        if: success()
+        if: always()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
+          if [ ! -f auth/token.json ]; then
+            echo "⚠️ auth/token.json が存在しない。書き戻しスキップ。"
+            exit 0
+          fi
           sha256sum auth/token.json > /tmp/token_hash_after.txt
           if diff -q /tmp/token_hash_before.txt /tmp/token_hash_after.txt > /dev/null 2>&1; then
             echo "✅ Google Token 変更なし。スキップ。"

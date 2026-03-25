@@ -48,11 +48,22 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python sync_instagram_insights.py
 
-      - name: Auto-save refreshed Google Token
+      - name: Auto-generate post analysis
         if: success()
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          PYTHONUNBUFFERED: '1'
+        run: python fill_post_analysis.py --force
+
+      - name: Auto-save refreshed Google Token
+        if: always()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
+          if [ ! -f auth/token.json ]; then
+            echo "⚠️ auth/token.json が存在しない。書き戻しスキップ。"
+            exit 0
+          fi
           sha256sum auth/token.json > /tmp/token_hash_after.txt
           if diff -q /tmp/token_hash_before.txt /tmp/token_hash_after.txt > /dev/null 2>&1; then
             echo "✅ Google Token 変更なし。スキップ。"
