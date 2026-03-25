@@ -1,4 +1,5 @@
-# 1日5回（JST 0:00, 6:00, 9:00, 12:00, 18:00）Instagram インサイトを取得しスプレッドシートに反映。
+# 1日5回（JST 0:00, 3:00, 9:00, 15:00, 21:00）Instagram インサイトを取得しスプレッドシートに反映。
+# JST 3:00 にアカウントレベルインサイト（日次 + 月曜は週次デモグラフィック）を取得。
 # 実行後に Google Token を自動で Secret に書き戻し、トークン期限切れを防止。
 # 完了後にAuto Post Instagramを連鎖トリガー（cronバックアップ）。
 name: Sync Instagram Insights
@@ -17,7 +18,7 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -40,7 +41,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt pynacl
 
-      - name: Run sync
+      # ====== 投稿レベルインサイト（毎回実行）======
+      - name: Run media insights sync (v2.0)
         env:
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
@@ -55,6 +57,45 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python fill_post_analysis.py --force
 
+      # ====== アカウントレベルインサイト（JST 3:00 = UTC 18:00 のみ）======
+      - name: Check if account insights should run (JST 3:00)
+        id: check_account
+        run: |
+          HOUR_UTC=$(date -u +%H)
+          DAY_OF_WEEK=$(TZ=Asia/Tokyo date +%u)
+          echo "hour_utc=$HOUR_UTC" >> $GITHUB_OUTPUT
+          echo "day_of_week=$DAY_OF_WEEK" >> $GITHUB_OUTPUT
+          if [ "$HOUR_UTC" = "18" ]; then
+            echo "run_account=true" >> $GITHUB_OUTPUT
+            if [ "$DAY_OF_WEEK" = "1" ]; then
+              echo "run_weekly=true" >> $GITHUB_OUTPUT
+            else
+              echo "run_weekly=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "run_account=false" >> $GITHUB_OUTPUT
+            echo "run_weekly=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run account daily insights
+        if: success() && steps.check_account.outputs.run_account == 'true'
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
+          PYTHONUNBUFFERED: '1'
+        run: python sync_instagram_account_insights.py
+
+      - name: Run account weekly demographics (Monday only)
+        if: success() && steps.check_account.outputs.run_weekly == 'true'
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
+          PYTHONUNBUFFERED: '1'
+        run: python sync_instagram_account_insights.py --weekly
+
+      # ====== 後処理 ======
       - name: Auto-save refreshed Google Token
         if: always()
         env:

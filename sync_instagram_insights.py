@@ -3,6 +3,15 @@
 Instagram 投稿インサイトを API で取得し、スプレッドシート「投稿毎データ」の
 1日後・1週間後ブロックに書き込む。
 
+v2.0 (2026-03-26):
+  - API v21.0 → v23.0（reels_skip_rate, reposts 対応）
+  - media_type 取得（Reels 判定用）
+  - カンマ区切りメトリクス（9回→2-3回の API call に最適化）
+  - Reels 専用メトリクス追加: ig_reels_avg_watch_time, ig_reels_video_view_total_time, reels_skip_rate
+  - reposts メトリクス追加（Feed + Reels）
+  - profile_activity breakdown=action_type 追加（BIO_LINK_CLICKED 等）
+  - 新列マッピング（col 86-97）
+
 前提:
 - Phase 1 で Meta のトークン・IG User ID を用意し、
   instagram_insights_config.json または環境変数で設定すること。
@@ -22,13 +31,12 @@ from typing import Any, Dict, List, Optional
 import requests
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 
-# ========== パス・スプレッドシート（sync_sheet_thumbnails と共通） ==========
+# ========== パス・スプレッドシート ==========
 DEFAULT_BASE_DIR = Path(
-    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_事業"
+    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事"
 )
 BASE_DIR = Path(os.environ.get("INSTAGRAM_INSIGHTS_BASE_DIR", str(DEFAULT_BASE_DIR))).expanduser()
 GOOGLE_AUTH_DIR = Path(
@@ -49,10 +57,8 @@ INSTAGRAM_CONFIG_FILE = GOOGLE_AUTH_DIR / "instagram_insights_config.json"
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# Instagram Graph API
-# ※ Instagram ビジネスアカウントのインサイト取得は Basic Display API ではなく
-#   Facebook Graph API 側を使うため、エンドポイントは graph.facebook.com を使う。
-GRAPH_API_BASE = "https://graph.facebook.com/v21.0"
+# Instagram Graph API — v23.0（2025年12月〜。reels_skip_rate, reposts 対応）
+GRAPH_API_BASE = "https://graph.facebook.com/v23.0"
 
 # Raw インサイト保存用シート
 RAW_SHEET_NAME = "Instagram_raw_insights_2026"
@@ -63,31 +69,116 @@ COL_DATE = 0   # A: 日付
 COL_TIME = 3   # D: 時刻
 COL_URL = 7    # H: 投稿URL
 
-# 1日後ブロック
-# 実シート 3 行目見出し:
-# - W: 全体（リーチ）
-# - AN: いいね
-# - AO: 保存
-# - AP: コメント
-COL_1DAY_REACH = 22     # W: 翌日リーチ（全体）
-COL_1DAY_LIKES = 39     # AN: 翌日いいね
-COL_1DAY_SAVED = 40     # AO: 翌日保存
-COL_1DAY_COMMENTS = 41  # AP: 翌日コメント
+# ---------- 1日後ブロック ----------
+METRIC_TO_COL_1DAY = {
+    "reach": 22,               # W 全体
+    "views": 31,               # AF 再生数
+    "total_interactions": 36,  # AK 全体
+    "likes": 39,               # AN いいね
+    "saved": 40,               # AO 保存
+    "comments": 41,            # AP コメント
+    "shares": 42,              # AQ シェア
+    "profile_visits": 43,      # AR プロフアクセス
+    "follows": 44,             # AS フォロー
+}
 
-# 1週間後ブロック
-# 実シート 3 行目見出し:
-# - AZ: 全体（リーチ）
-# - BR: いいね
-# - BS: 保存
-# - BT: コメント
-COL_7DAY_REACH = 51     # AZ: 1週間後リーチ（全体）
-COL_7DAY_LIKES = 69     # BR: 1週間後いいね
-COL_7DAY_SAVED = 70     # BS: 1週間後保存
-COL_7DAY_COMMENTS = 71  # BT: 1週間後コメント
+# ---------- 7日後ブロック ----------
+METRIC_TO_COL_7DAY = {
+    "reach": 51,               # AZ 全体
+    "views": 61,               # BJ 再生回数
+    "total_interactions": 66,  # BO 全体
+    "likes": 69,               # BR いいね
+    "saved": 70,               # BS 保存
+    "comments": 71,            # BT コメント
+    "shares": 72,              # BU シェア
+    "profile_visits": 73,      # BV プロフアクセス
+    "follows": 74,             # BW フォロー
+}
 
-# 経過時間のしきい値（時間）
+# ---------- 拡張メトリクス（v2.0 追加）—— col 86〜 ----------
+# 1日後 拡張
+EXT_METRIC_TO_COL_1DAY = {
+    "ig_reels_avg_watch_time": 86,          # CI: リール平均視聴時間(ms)
+    "ig_reels_video_view_total_time": 87,   # CJ: リール総再生時間(ms)
+    "reels_skip_rate": 88,                  # CK: 3秒以内スキップ率(%)
+    "reposts": 89,                          # CL: リポスト数
+    "profile_activity_bio_link": 90,        # CM: プロフ→BIOリンクタップ
+}
+
+# 7日後 拡張
+EXT_METRIC_TO_COL_7DAY = {
+    "ig_reels_avg_watch_time": 91,          # CO: リール平均視聴時間(ms)
+    "ig_reels_video_view_total_time": 92,   # CP: リール総再生時間(ms)
+    "reels_skip_rate": 93,                  # CQ: 3秒以内スキップ率(%)
+    "reposts": 94,                          # CR: リポスト数
+    "profile_activity_bio_link": 95,        # CS: プロフ→BIOリンクタップ
+}
+
+# メディアタイプ列
+COL_MEDIA_TYPE = 96  # CT: IMAGE / VIDEO / CAROUSEL_ALBUM
+
+# ---------- メタデータ列（既存）----------
+JST = timezone(timedelta(hours=9))
+
+COL_1DAY_CAPTURED_AT = 81
+COL_1DAY_CAPTURE_MODE = 82
+COL_7DAY_CAPTURED_AT = 83
+COL_7DAY_CAPTURE_MODE = 84
+COL_LATEST_CAPTURED_AT = 85
+
+# ---------- 経過時間しきい値 ----------
 HOURS_1DAY_MIN = 24
 HOURS_7DAY_MIN = 7 * 24
+
+# ---------- メトリクス定義 ----------
+# 標準メトリクス（全メディアタイプ共通）— 1回のカンマ区切りコールで取得
+STANDARD_METRICS = [
+    "reach",
+    "views",
+    "total_interactions",
+    "likes",
+    "saved",
+    "comments",
+    "shares",
+    "profile_visits",
+    "follows",
+    "reposts",
+]
+
+# Reels 専用メトリクス（media_type == "VIDEO" の場合のみ）
+REELS_METRICS = [
+    "ig_reels_avg_watch_time",
+    "ig_reels_video_view_total_time",
+    "reels_skip_rate",
+]
+
+# RAW シート用ヘッダー（v2.0: 拡張メトリクス追加）
+RAW_SHEET_HEADERS = [
+    "sheet_row",
+    "snapshot_type",
+    "capture_mode",
+    "snapshot_at_utc",
+    "media_id",
+    "permalink",
+    "media_type",
+    # 標準メトリクス
+    "reach",
+    "views",
+    "total_interactions",
+    "likes",
+    "saved",
+    "comments",
+    "shares",
+    "profile_visits",
+    "follows",
+    "reposts",
+    # Reels 専用
+    "ig_reels_avg_watch_time",
+    "ig_reels_video_view_total_time",
+    "reels_skip_rate",
+    # プロフィールアクティビティ breakdown
+    "profile_activity_bio_link",
+]
 
 
 @dataclass
@@ -102,6 +193,9 @@ class SheetRow:
     has_7day: bool
     has_1day_metadata: bool
     has_7day_metadata: bool
+    # 拡張メトリクスの既存値
+    has_1day_ext: bool
+    has_7day_ext: bool
 
 
 @dataclass
@@ -110,68 +204,7 @@ class MediaInfo:
     media_id: str
     permalink: str
     timestamp: datetime  # 投稿日時 UTC
-
-
-SUPPORTED_MEDIA_METRICS = [
-    "reach",
-    "views",
-    "total_interactions",
-    "likes",
-    "saved",
-    "comments",
-    "shares",
-    "profile_visits",
-    "follows",
-]
-
-RAW_SHEET_HEADERS = [
-    "sheet_row",
-    "snapshot_type",
-    "capture_mode",
-    "snapshot_at_utc",
-    "media_id",
-    "permalink",
-    "reach",
-    "views",
-    "total_interactions",
-    "likes",
-    "saved",
-    "comments",
-    "shares",
-    "profile_visits",
-    "follows",
-]
-
-METRIC_TO_COL_1DAY = {
-    "reach": 22,               # W 全体
-    "views": 31,               # AF 再生数
-    "total_interactions": 36,  # AK 全体
-    "likes": 39,               # AN いいね
-    "saved": 40,               # AO 保存
-    "comments": 41,            # AP コメント
-    "shares": 42,              # AQ シェア
-    "profile_visits": 43,      # AR プロフアクセス
-    "follows": 44,             # AS フォロー
-}
-
-METRIC_TO_COL_7DAY = {
-    "reach": 51,               # AZ 全体
-    "views": 61,               # BJ 再生回数
-    "total_interactions": 66,  # BO 全体
-    "likes": 69,               # BR いいね
-    "saved": 70,               # BS 保存
-    "comments": 71,            # BT コメント
-    "shares": 72,              # BU シェア
-    "profile_visits": 73,      # BV プロフアクセス
-    "follows": 74,             # BW フォロー
-}
-JST = timezone(timedelta(hours=9))
-
-COL_1DAY_CAPTURED_AT = 81
-COL_1DAY_CAPTURE_MODE = 82
-COL_7DAY_CAPTURED_AT = 83
-COL_7DAY_CAPTURE_MODE = 84
-COL_LATEST_CAPTURED_AT = 85
+    media_type: str      # IMAGE, VIDEO, CAROUSEL_ALBUM
 
 
 def parse_sheet_datetime(date_str: str, time_str: str, default_year: int = 2026) -> Optional[datetime]:
@@ -183,16 +216,14 @@ def parse_sheet_datetime(date_str: str, time_str: str, default_year: int = 2026)
     if not date_str:
         return None
     if not time_str:
-        time_str = "12:00"  # 時刻未入力はその日12:00としてマッチさせる
+        time_str = "12:00"
 
-    # 日付: "3/9 月", "3/10 火" など → 月・日
     m = re.search(r"(\d{1,2})/(\d{1,2})", date_str)
     if not m:
         return None
     month = int(m.group(1))
     day = int(m.group(2))
 
-    # 時刻: "21:22" または "2230"（4桁）
     m2 = re.search(r"(\d{1,2}):(\d{2})", time_str)
     if m2:
         hour = int(m2.group(1))
@@ -221,13 +252,11 @@ def get_google_credentials() -> Credentials:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
-            if not CREDS_FILE.exists():
-                raise FileNotFoundError(
-                    f"credentials.json が見つかりません: {CREDS_FILE}\n"
-                    "Google 用 OAuth クライアントを配置してください。"
-                )
-            flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_FILE), GOOGLE_SCOPES)
-            creds = flow.run_local_server(port=0)
+            raise FileNotFoundError(
+                "token.json が無効で、クラウド環境では再認証できません。\n"
+                "ローカルで python3 utils/sync_instagram_insights.py を実行して token.json を再生成し、\n"
+                "GitHub Secret GOOGLE_TOKEN_JSON を更新してください。"
+            )
         with TOKEN_FILE.open("w", encoding="utf-8") as f:
             f.write(creds.to_json())
     return creds
@@ -258,7 +287,6 @@ def extract_url_path(url: str) -> Optional[str]:
     if not url or not isinstance(url, str):
         return None
     url = url.strip()
-    # https://www.instagram.com/p/ABC123/  or  /reel/ABC123/
     m = re.search(r"(/p/[A-Za-z0-9_-]+/?|/reel/[A-Za-z0-9_-]+/?)", url)
     if m:
         path = m.group(1).rstrip("/")
@@ -267,10 +295,10 @@ def extract_url_path(url: str) -> Optional[str]:
 
 
 def fetch_all_media(access_token: str, ig_user_id: str) -> List[MediaInfo]:
-    """メディア一覧をページネーションで全件取得"""
+    """メディア一覧をページネーションで全件取得（media_type 含む）"""
     url = f"{GRAPH_API_BASE}/{ig_user_id}/media"
     params = {
-        "fields": "id,permalink,timestamp",
+        "fields": "id,permalink,timestamp,media_type",
         "limit": 100,
         "access_token": access_token,
     }
@@ -282,8 +310,8 @@ def fetch_all_media(access_token: str, ig_user_id: str) -> List[MediaInfo]:
         for item in data.get("data", []):
             permalink = item.get("permalink") or ""
             ts_str = item.get("timestamp") or ""
+            media_type = item.get("media_type") or "IMAGE"
             try:
-                # ISO 8601 例: 2026-02-02T04:49:00+0000（+0000 は +00:00 に正規化）
                 normalized = ts_str.replace("Z", "+00:00").replace("+0000", "+00:00")
                 ts = datetime.fromisoformat(normalized)
                 if ts.tzinfo is None:
@@ -294,8 +322,8 @@ def fetch_all_media(access_token: str, ig_user_id: str) -> List[MediaInfo]:
                 media_id=item["id"],
                 permalink=permalink,
                 timestamp=ts,
+                media_type=media_type,
             ))
-        # 次のページ
         next_url = data.get("paging", {}).get("next")
         if not next_url:
             break
@@ -304,24 +332,83 @@ def fetch_all_media(access_token: str, ig_user_id: str) -> List[MediaInfo]:
     return out
 
 
-def fetch_insights(access_token: str, media_id: str) -> Optional[Dict[str, int]]:
-    """1メディアのインサイト取得。利用可能な主要メトリクスを個別取得して返す。"""
-    result: Dict[str, int] = {}
-    for metric in SUPPORTED_MEDIA_METRICS:
-        url = f"{GRAPH_API_BASE}/{media_id}/insights"
+def fetch_insights(access_token: str, media_id: str, media_type: str) -> Optional[Dict[str, Any]]:
+    """
+    1メディアのインサイト取得。API コール数を最小化:
+      1. 標準メトリクス（カンマ区切り1回）
+      2. Reels専用メトリクス（VIDEO のみ、1回）
+      3. profile_activity + breakdown=action_type（1回）
+    合計 2〜3 API calls（旧: 9 calls）
+    """
+    result: Dict[str, Any] = {}
+    insights_url = f"{GRAPH_API_BASE}/{media_id}/insights"
+
+    # --- 1. 標準メトリクス（カンマ区切り一括取得）---
+    metrics_str = ",".join(STANDARD_METRICS)
+    params = {"metric": metrics_str, "access_token": access_token}
+    try:
+        r = requests.get(insights_url, params=params, timeout=30)
+        if r.status_code == 200:
+            for item in r.json().get("data", []):
+                name = item.get("name")
+                values = item.get("values", [])
+                if values and isinstance(values[0].get("value"), (int, float)):
+                    result[name] = int(values[0]["value"])
+        elif r.status_code == 400:
+            # reposts が非対応の場合、reposts を除いて再試行
+            fallback_metrics = [m for m in STANDARD_METRICS if m != "reposts"]
+            params["metric"] = ",".join(fallback_metrics)
+            r2 = requests.get(insights_url, params=params, timeout=30)
+            if r2.status_code == 200:
+                for item in r2.json().get("data", []):
+                    name = item.get("name")
+                    values = item.get("values", [])
+                    if values and isinstance(values[0].get("value"), (int, float)):
+                        result[name] = int(values[0]["value"])
+    except requests.RequestException:
+        pass
+
+    # --- 2. Reels 専用メトリクス（VIDEO のみ）---
+    if media_type == "VIDEO":
+        reels_str = ",".join(REELS_METRICS)
+        params = {"metric": reels_str, "access_token": access_token}
+        try:
+            r = requests.get(insights_url, params=params, timeout=30)
+            if r.status_code == 200:
+                for item in r.json().get("data", []):
+                    name = item.get("name")
+                    values = item.get("values", [])
+                    if values and values[0].get("value") is not None:
+                        val = values[0]["value"]
+                        if isinstance(val, (int, float)):
+                            # avg_watch_time はミリ秒（float可）、skip_rate は%（float）
+                            result[name] = val
+        except requests.RequestException:
+            pass
+
+    # --- 3. profile_activity + breakdown（BIOリンクタップ等）---
+    # Reels には profile_activity がないため Feed/Carousel のみ
+    if media_type != "VIDEO":
         params = {
-            "metric": metric,
+            "metric": "profile_activity",
+            "breakdown": "action_type",
             "access_token": access_token,
         }
-        r = requests.get(url, params=params, timeout=30)
-        if r.status_code != 200:
-            continue
-        data = r.json()
-        for item in data.get("data", []):
-            name = item.get("name")
-            values = item.get("values", [])
-            if values and isinstance(values[0].get("value"), (int, float)):
-                result[name] = int(values[0]["value"])
+        try:
+            r = requests.get(insights_url, params=params, timeout=30)
+            if r.status_code == 200:
+                for item in r.json().get("data", []):
+                    if item.get("name") == "profile_activity":
+                        values = item.get("values", [])
+                        if values:
+                            breakdown_data = values[0].get("value", {})
+                            if isinstance(breakdown_data, dict):
+                                result["profile_activity_bio_link"] = breakdown_data.get(
+                                    "BIO_LINK_CLICKED", 0
+                                )
+        except requests.RequestException:
+            pass
+
     return result if result else None
 
 
@@ -351,6 +438,9 @@ def parse_sheet_rows(values: List[List[Any]], start_row: int = 4) -> List[SheetR
         has_7day = block_is_complete(row, METRIC_TO_COL_7DAY)
         has_1day_metadata = has_cell_value(row, COL_1DAY_CAPTURED_AT) and has_cell_value(row, COL_1DAY_CAPTURE_MODE)
         has_7day_metadata = has_cell_value(row, COL_7DAY_CAPTURED_AT) and has_cell_value(row, COL_7DAY_CAPTURE_MODE)
+        # 拡張メトリクスの完了チェック（少なくとも1つ拡張列に値があれば完了扱い）
+        has_1day_ext = has_cell_value(row, EXT_METRIC_TO_COL_1DAY.get("reposts", 89))
+        has_7day_ext = has_cell_value(row, EXT_METRIC_TO_COL_7DAY.get("reposts", 94))
         rows.append(SheetRow(
             row_index=row_idx,
             date_str=date_str,
@@ -360,6 +450,8 @@ def parse_sheet_rows(values: List[List[Any]], start_row: int = 4) -> List[SheetR
             has_7day=has_7day,
             has_1day_metadata=has_1day_metadata,
             has_7day_metadata=has_7day_metadata,
+            has_1day_ext=has_1day_ext,
+            has_7day_ext=has_7day_ext,
         ))
     return rows
 
@@ -397,58 +489,23 @@ def ensure_raw_sheet(sheets_service) -> None:
             },
         ).execute()
 
-    # ヘッダーがなければ書く
+    # ヘッダーがなければ書く（v2.0 で列数が増えたので常に最新化）
+    header_range = f"{RAW_SHEET_NAME}!A1:{column_letter(len(RAW_SHEET_HEADERS) - 1)}1"
     resp = (
         sheets_service.spreadsheets()
         .values()
-        .get(spreadsheetId=SHEET_ID, range=f"{RAW_SHEET_NAME}!A1:O1")
+        .get(spreadsheetId=SHEET_ID, range=header_range)
         .execute()
     )
     current_header = resp.get("values", [[]])[0] if resp.get("values") else []
     if current_header != RAW_SHEET_HEADERS:
         sheets_service.spreadsheets().values().update(
             spreadsheetId=SHEET_ID,
-            range=f"{RAW_SHEET_NAME}!A1:O1",
+            range=header_range,
             valueInputOption="USER_ENTERED",
             body={"values": [RAW_SHEET_HEADERS]},
         ).execute()
-
-
-def append_raw_snapshot(
-    sheets_service,
-    row: int,
-    media: MediaInfo,
-    snapshot_type: str,
-    capture_mode: str,
-    insights: Dict[str, int],
-) -> None:
-    """Raw シートに 1 行追記する。"""
-    values = [
-        [
-            row,
-            snapshot_type,
-            capture_mode,
-            datetime.now(timezone.utc).isoformat(),
-            media.media_id,
-            media.permalink,
-            insights.get("reach"),
-            insights.get("views"),
-            insights.get("total_interactions"),
-            insights.get("likes"),
-            insights.get("saved"),
-            insights.get("comments"),
-            insights.get("shares"),
-            insights.get("profile_visits"),
-            insights.get("follows"),
-        ]
-    ]
-    sheets_service.spreadsheets().values().append(
-        spreadsheetId=SHEET_ID,
-        range=f"{RAW_SHEET_NAME}!A:A",
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": values},
-    ).execute()
+        print(f"RAW シートヘッダーを更新しました（{len(RAW_SHEET_HEADERS)} 列）")
 
 
 def fill_missing_urls(
@@ -461,13 +518,11 @@ def fill_missing_urls(
     """
     H 列の URL が空の行について、日付(A)・時刻(D)から投稿日時を推定し、
     Instagram のメディア一覧から「同じ年月日・同じ時分」の permalink を埋める。
-    同分のメディアがなければ、同日で最も近い時刻のメディアを採用（最大±15分）。
     """
     filled_count = 0
     debug_count = 0
     for offset, row in enumerate(values):
         row_idx = start_row + offset
-        # 既に URL が入っていればスキップ
         if len(row) > COL_URL and str(row[COL_URL] or "").strip():
             continue
 
@@ -489,7 +544,6 @@ def fill_missing_urls(
             target_jst.minute,
         )
 
-        # 1) 完全一致（年月日・時・分）を優先
         best_media: Optional[MediaInfo] = None
         best_diff: Optional[float] = None
         for m in media_list:
@@ -502,9 +556,8 @@ def fill_missing_urls(
                 best_diff = diff
                 best_media = m
 
-        # 2) 同分がなければ同日で±15分以内の最も近いメディアを採用
         if best_media is None:
-            max_diff_sec = 15 * 60  # 15分
+            max_diff_sec = 15 * 60
             for m in media_list:
                 mj = m.timestamp.astimezone(JST)
                 if (mj.year, mj.month, mj.day) != (target_jst.year, target_jst.month, target_jst.day):
@@ -516,18 +569,15 @@ def fill_missing_urls(
 
         if best_media is None:
             if debug and debug_count < 5:
-                # 同日のメディアがあるか確認
                 same_day = [m for m in media_list if (m.timestamp.astimezone(JST).year, m.timestamp.astimezone(JST).month, m.timestamp.astimezone(JST).day) == (target_jst.year, target_jst.month, target_jst.day)]
                 print(f"  [URL補完] 行{row_idx}: マッチなし key={target_key} A={date_str!r} D={time_str!r} 同日メディア={len(same_day)}件")
                 debug_count += 1
             continue
 
-        # values 配列内を更新（後続の parse_sheet_rows が使う）
         if len(row) <= COL_URL:
             row.extend([""] * (COL_URL + 1 - len(row)))
         row[COL_URL] = best_media.permalink
 
-        # 実際のシートにも書き戻す
         update_sheet_cell(sheets_service, row_idx, COL_URL, best_media.permalink)
         filled_count += 1
 
@@ -599,7 +649,7 @@ def batch_update_cells(sheets_service, updates: List[Dict[str, Any]]) -> None:
 
 def build_metric_updates(
     row: int,
-    insights: Dict[str, int],
+    insights: Dict[str, Any],
     metric_to_col: Dict[str, int],
 ) -> List[Dict[str, Any]]:
     updates: List[Dict[str, Any]] = []
@@ -660,10 +710,26 @@ def build_snapshot_metadata_updates(
     return updates
 
 
+def build_media_type_update(row: int, media_type: str) -> Dict[str, Any]:
+    """メディアタイプ列を更新"""
+    return {
+        "dataFilter": {
+            "gridRange": {
+                "sheetId": SHEET_ID_2026,
+                "startRowIndex": row - 1,
+                "endRowIndex": row,
+                "startColumnIndex": COL_MEDIA_TYPE,
+                "endColumnIndex": COL_MEDIA_TYPE + 1,
+            }
+        },
+        "values": [[media_type]],
+    }
+
+
 def write_metric_block(
     sheets_service,
     row: int,
-    insights: Dict[str, int],
+    insights: Dict[str, Any],
     metric_to_col: Dict[str, int],
 ) -> None:
     batch_update_cells(
@@ -691,8 +757,47 @@ def capture_mode_for_snapshot(snapshot_type: str, hours: float) -> str:
     return "scheduled" if HOURS_7DAY_MIN <= hours < (8 * 24) else "backfill"
 
 
+def build_raw_row(
+    row: int,
+    snapshot_type: str,
+    capture_mode: str,
+    captured_at: str,
+    media: MediaInfo,
+    insights: Dict[str, Any],
+) -> List[Any]:
+    """RAW シート用の1行を構築（v2.0: 拡張メトリクス含む）"""
+    return [
+        row,
+        snapshot_type,
+        capture_mode,
+        captured_at,
+        media.media_id,
+        media.permalink,
+        media.media_type,
+        # 標準メトリクス
+        insights.get("reach"),
+        insights.get("views"),
+        insights.get("total_interactions"),
+        insights.get("likes"),
+        insights.get("saved"),
+        insights.get("comments"),
+        insights.get("shares"),
+        insights.get("profile_visits"),
+        insights.get("follows"),
+        insights.get("reposts"),
+        # Reels 専用
+        insights.get("ig_reels_avg_watch_time"),
+        insights.get("ig_reels_video_view_total_time"),
+        insights.get("reels_skip_rate"),
+        # プロフィールアクティビティ
+        insights.get("profile_activity_bio_link"),
+    ]
+
+
 def main() -> None:
-    print("=== Instagram インサイト連携 ===\n")
+    print("=== Instagram インサイト連携 v2.0 ===\n")
+    print(f"API: {GRAPH_API_BASE}")
+    print(f"メトリクス: 標準 {len(STANDARD_METRICS)} + Reels {len(REELS_METRICS)} + profile_activity breakdown\n")
 
     # 1. 認証
     try:
@@ -705,16 +810,22 @@ def main() -> None:
     sheets_service = build("sheets", "v4", credentials=creds)
     ensure_raw_sheet(sheets_service)
 
-    # 2. Instagram メディア一覧取得
+    # 2. Instagram メディア一覧取得（media_type 含む）
     try:
         media_list = fetch_all_media(access_token, ig_user_id)
     except requests.RequestException as e:
         print(f"Instagram API エラー: {e}")
         return
     media_by_path = build_media_by_path(media_list)
-    print(f"API: メディア {len(media_list)} 件、パス照合用 {len(media_by_path)} 件")
 
-    # 3. シート読み取り（A4:最終行、sheetId で指定。絵文字入りシート名のパースエラーを回避）
+    # メディアタイプ分布
+    type_counts = {}
+    for m in media_list:
+        type_counts[m.media_type] = type_counts.get(m.media_type, 0) + 1
+    type_summary = ", ".join(f"{k}: {v}" for k, v in sorted(type_counts.items()))
+    print(f"API: メディア {len(media_list)} 件（{type_summary}）、パス照合用 {len(media_by_path)} 件")
+
+    # 3. シート読み取り（拡張列も含めて読む: 0〜97列）
     sheet_row_count = get_sheet_row_count(sheets_service)
     body = {
         "dataFilters": [
@@ -724,7 +835,7 @@ def main() -> None:
                     "startRowIndex": 3,
                     "endRowIndex": sheet_row_count,
                     "startColumnIndex": 0,
-                    "endColumnIndex": 93,
+                    "endColumnIndex": 100,  # v2.0: 拡張列まで読む
                 }
             }
         ],
@@ -748,6 +859,8 @@ def main() -> None:
     now = datetime.now(timezone.utc)
     written_1day = 0
     written_7day = 0
+    written_1day_ext = 0
+    written_7day_ext = 0
     repaired_1day_metadata = 0
     repaired_7day_metadata = 0
     pending_updates: List[Dict[str, Any]] = []
@@ -769,85 +882,79 @@ def main() -> None:
         needs_7day_metrics = hours >= HOURS_7DAY_MIN and not sheet_row.has_7day
         needs_1day_metadata = hours >= HOURS_1DAY_MIN and not sheet_row.has_1day_metadata
         needs_7day_metadata = hours >= HOURS_7DAY_MIN and not sheet_row.has_7day_metadata
+        needs_1day_ext = hours >= HOURS_1DAY_MIN and not sheet_row.has_1day_ext
+        needs_7day_ext = hours >= HOURS_7DAY_MIN and not sheet_row.has_7day_ext
 
-        if not any([needs_1day_metrics, needs_7day_metrics, needs_1day_metadata, needs_7day_metadata]):
+        if not any([needs_1day_metrics, needs_7day_metrics, needs_1day_metadata,
+                     needs_7day_metadata, needs_1day_ext, needs_7day_ext]):
             continue
 
-        # インサイト取得
-        insights = fetch_insights(access_token, media.media_id)
+        # インサイト取得（v2.0: media_type を渡して Reels 判定）
+        insights = fetch_insights(access_token, media.media_id, media.media_type)
         if not insights:
             continue
 
         row = sheet_row.row_index
 
-        # 1日後ブロック（24h 以上。値未入力の補完と、取得メタデータ欠損の修復を行う）
-        if needs_1day_metrics or needs_1day_metadata:
+        # メディアタイプを常に書き込む（未設定なら）
+        if not has_cell_value(values[row - 4] if (row - 4) < len(values) else [], COL_MEDIA_TYPE):
+            pending_updates.append(build_media_type_update(row, media.media_type))
+
+        # 1日後ブロック
+        if needs_1day_metrics or needs_1day_metadata or needs_1day_ext:
             captured_at = datetime.now(timezone.utc).isoformat()
             capture_mode = capture_mode_for_snapshot("1day", hours)
             if needs_1day_metrics:
                 pending_updates.extend(build_metric_updates(row, insights, METRIC_TO_COL_1DAY))
+            if needs_1day_ext:
+                pending_updates.extend(build_metric_updates(row, insights, EXT_METRIC_TO_COL_1DAY))
             if needs_1day_metadata:
                 pending_updates.extend(build_snapshot_metadata_updates(row, "1day", capture_mode, captured_at))
-            pending_raw_rows.append([
-                row,
-                "1day",
-                capture_mode,
-                captured_at,
-                media.media_id,
-                media.permalink,
-                insights.get("reach"),
-                insights.get("views"),
-                insights.get("total_interactions"),
-                insights.get("likes"),
-                insights.get("saved"),
-                insights.get("comments"),
-                insights.get("shares"),
-                insights.get("profile_visits"),
-                insights.get("follows"),
-            ])
+            pending_raw_rows.append(build_raw_row(row, "1day", capture_mode, captured_at, media, insights))
             if needs_1day_metrics:
                 written_1day += 1
                 print(
                     f"  行 {row}: 1日後を更新 "
                     f"[{capture_mode}] "
-                    f"(reach={insights.get('reach')}, views={insights.get('views')}, likes={insights.get('likes')})"
+                    f"(reach={insights.get('reach')}, views={insights.get('views')}, likes={insights.get('likes')}"
+                    f"{', skip_rate=' + str(insights.get('reels_skip_rate')) if 'reels_skip_rate' in insights else ''})"
                 )
+            elif needs_1day_ext:
+                written_1day_ext += 1
+                ext_info = []
+                if "ig_reels_avg_watch_time" in insights:
+                    ext_info.append(f"avg_watch={insights['ig_reels_avg_watch_time']}")
+                if "reels_skip_rate" in insights:
+                    ext_info.append(f"skip={insights['reels_skip_rate']}")
+                if "reposts" in insights:
+                    ext_info.append(f"reposts={insights['reposts']}")
+                print(f"  行 {row}: 1日後 拡張メトリクス [{capture_mode}] ({', '.join(ext_info)})")
             else:
                 repaired_1day_metadata += 1
                 print(f"  行 {row}: 1日後メタデータを補完 [{capture_mode}]")
 
-        # 1週間後ブロック（7日以上。値未入力の補完と、取得メタデータ欠損の修復を行う）
-        if needs_7day_metrics or needs_7day_metadata:
+        # 1週間後ブロック
+        if needs_7day_metrics or needs_7day_metadata or needs_7day_ext:
             captured_at = datetime.now(timezone.utc).isoformat()
             capture_mode = capture_mode_for_snapshot("7day", hours)
             if needs_7day_metrics:
                 pending_updates.extend(build_metric_updates(row, insights, METRIC_TO_COL_7DAY))
+            if needs_7day_ext:
+                pending_updates.extend(build_metric_updates(row, insights, EXT_METRIC_TO_COL_7DAY))
             if needs_7day_metadata:
                 pending_updates.extend(build_snapshot_metadata_updates(row, "7day", capture_mode, captured_at))
-            pending_raw_rows.append([
-                row,
-                "7day",
-                capture_mode,
-                captured_at,
-                media.media_id,
-                media.permalink,
-                insights.get("reach"),
-                insights.get("views"),
-                insights.get("total_interactions"),
-                insights.get("likes"),
-                insights.get("saved"),
-                insights.get("comments"),
-                insights.get("shares"),
-                insights.get("profile_visits"),
-                insights.get("follows"),
-            ])
+            pending_raw_rows.append(build_raw_row(row, "7day", capture_mode, captured_at, media, insights))
             if needs_7day_metrics:
                 written_7day += 1
                 print(
                     f"  行 {row}: 1週間後を更新 "
                     f"[{capture_mode}] "
-                    f"(reach={insights.get('reach')}, views={insights.get('views')}, likes={insights.get('likes')})"
+                    f"(reach={insights.get('reach')}, views={insights.get('views')}, likes={insights.get('likes')}"
+                    f"{', skip_rate=' + str(insights.get('reels_skip_rate')) if 'reels_skip_rate' in insights else ''})"
                 )
+            elif needs_7day_ext:
+                written_7day_ext += 1
+                print(f"  行 {row}: 1週間後 拡張メトリクス [{capture_mode}]")
             else:
                 repaired_7day_metadata += 1
                 print(f"  行 {row}: 1週間後メタデータを補完 [{capture_mode}]")
@@ -857,8 +964,8 @@ def main() -> None:
 
     print(
         f"\n完了: 1日後 {written_1day} 件、1週間後 {written_7day} 件を更新、"
-        f"1日後メタデータ {repaired_1day_metadata} 件、"
-        f"1週間後メタデータ {repaired_7day_metadata} 件を補完しました。"
+        f"拡張 1日後 {written_1day_ext} 件、拡張 1週間後 {written_7day_ext} 件、"
+        f"メタデータ補完 {repaired_1day_metadata + repaired_7day_metadata} 件"
     )
 
 
