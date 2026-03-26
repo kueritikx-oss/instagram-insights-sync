@@ -24,7 +24,13 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple
+
+_UTILS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _UTILS_DIR not in sys.path:
+    sys.path.insert(0, _UTILS_DIR)
+from instagram_sheet_metadata import build_metadata_fixes  # noqa: E402
+from datetime import date, datetime, timedelta, timezone
 
 import requests
 
@@ -43,6 +49,7 @@ COL_DATE = 0          # A
 COL_POST_NUM = 2      # C
 COL_TIME = 3          # D
 COL_TITLE = 4         # E
+COL_CTA = 5           # F: 投稿種別（プレースホルダ「自動」を補正する）
 COL_URL = 7           # H
 COL_CAPTION = 11      # L
 COL_STATUS = 92       # CO: 投稿ステータス
@@ -57,6 +64,10 @@ CONTAINER_POLL_MAX = 60  # seconds
 CONTAINER_POLL_INTERVAL = [1, 2, 4, 8, 8, 8, 8, 8]  # exponential backoff
 POST_GAP_SECONDS = 60  # minimum gap between consecutive posts
 DAILY_POST_LIMIT = 3   # max posts per day (self-imposed)
+
+# 予定時刻を逃したあとも、最大何時間「まだ同日キャッチアップ」するか（cron 15分の取りこぼし対策）
+_DEFAULT_CATCHUP_H = 18
+# env AUTO_POST_MAX_CATCHUP_HOURS で上書き可
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -310,64 +321,95 @@ def post_carousel(access_token, ig_user_id, image_urls, caption):
 # ---------------------------------------------------------------------------
 # Schedule logic
 # ---------------------------------------------------------------------------
-def parse_schedule_time(date_str, time_str):
-    """Parse date + time from spreadsheet into JST datetime.
+def _excel_serial_to_ymd(serial: int) -> Tuple[int, int, int]:
+    """Google スプシの日付シリアル（1899-12-30 基準）→ (year, month, day)。"""
+    base = date(1899, 12, 30)
+    d = base + timedelta(days=int(serial))
+    return d.year, d.month, d.day
 
-    Handles multiple date formats:
-    - YYYY/MM/DD, YYYY-MM-DD (full)
-    - M/D, MM/DD (no year → assume current year)
-    - M/D/YYYY (US-style)
 
-    Handles multiple time formats:
-    - HH:MM, H:MM
-    - HHMM (no colon)
-    - HH：MM (full-width colon)
-    """
-    if not date_str or not time_str:
+def _parse_date_to_ymd(date_val) -> Optional[Tuple[int, int, int]]:
+    """A列の値から (y,m,d)。Excel 数値・文字列の M/D 等に対応。"""
+    if date_val is None or date_val == "":
         return None
+    if isinstance(date_val, bool):
+        return None
+    if isinstance(date_val, (int, float)):
+        n = float(date_val)
+        if n > 2000:  # シリアル日付
+            return _excel_serial_to_ymd(int(n))
+        return None
+    date_str = str(date_val).strip().replace("-", "/")
+    if date_str.replace(".", "").isdigit():
+        n = float(date_str)
+        if n > 2000:
+            return _excel_serial_to_ymd(int(n))
+    parts = date_str.split("/")
+    try:
+        if len(parts) == 3 and len(parts[0]) == 4:
+            return int(parts[0]), int(parts[1]), int(parts[2])
+        if len(parts) == 3 and len(parts[2]) == 4:
+            return int(parts[2]), int(parts[0]), int(parts[1])
+        if len(parts) == 2:
+            y = datetime.now(JST).year
+            return y, int(parts[0]), int(parts[1])
+    except (ValueError, IndexError):
+        pass
+    return None
 
-    date_str = date_str.strip()
-    time_str = time_str.strip().replace("：", ":")
 
-    # Normalize time
-    if ":" not in time_str and len(time_str) >= 3:
+def _parse_time_to_hm(time_val) -> Optional[Tuple[int, int]]:
+    """D列: 0.375 のような日付の小数（時刻）または 9:00 文字列。"""
+    if time_val is None or time_val == "":
+        return None
+    if isinstance(time_val, bool):
+        return None
+    if isinstance(time_val, (int, float)):
+        frac = float(time_val)
+        if frac < 0 or frac >= 1.0:
+            return None
+        total = int(round(frac * 24 * 3600))
+        if total >= 24 * 3600:
+            total = 24 * 3600 - 1
+        h, r = divmod(total, 3600)
+        m, _ = divmod(r, 60)
+        return h, m
+    time_str = str(time_val).strip().replace("：", ":")
+    if not time_str:
+        return None
+    if ":" not in time_str and len(time_str) >= 3 and time_str.isdigit():
         time_str = time_str[:-2] + ":" + time_str[-2:]
-
-    # Parse time
     try:
         parts = time_str.split(":")
         hour = int(parts[0])
         minute = int(parts[1]) if len(parts) > 1 else 0
+        return hour, minute
     except (ValueError, IndexError):
         return None
 
-    # Parse date
-    date_str = date_str.replace("-", "/")
-    parts = date_str.split("/")
 
+def parse_schedule_time(date_val, time_val):
+    """スプシの A・D から JST の予定日時。UNFORMATTED のシリアル日付・時刻小数に対応。"""
+    ymd = _parse_date_to_ymd(date_val)
+    hm = _parse_time_to_hm(time_val)
+    if not ymd or not hm:
+        return None
+    year, month, day = ymd
+    hour, minute = hm
     try:
-        if len(parts) == 3 and len(parts[0]) == 4:
-            # YYYY/MM/DD
-            year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-        elif len(parts) == 3 and len(parts[2]) == 4:
-            # MM/DD/YYYY
-            month, day, year = int(parts[0]), int(parts[1]), int(parts[2])
-        elif len(parts) == 2:
-            # M/D (no year) → assume current year
-            month, day = int(parts[0]), int(parts[1])
-            year = datetime.now(JST).year
-        else:
-            return None
-
-        dt = datetime(year, month, day, hour, minute, tzinfo=JST)
-        return dt
-    except (ValueError, IndexError):
+        return datetime(year, month, day, hour, minute, tzinfo=JST)
+    except ValueError:
         return None
 
 
 def find_due_posts(rows, window_minutes=20, force_post_num=None):
     """Find posts that are due for posting within the time window."""
     now = datetime.now(JST)
+    try:
+        catchup_h = int(os.environ.get("AUTO_POST_MAX_CATCHUP_HOURS", str(_DEFAULT_CATCHUP_H)))
+    except ValueError:
+        catchup_h = _DEFAULT_CATCHUP_H
+    catchup_h = max(1, min(catchup_h, 23))
     due = []
 
     for i, row in enumerate(rows):
@@ -384,6 +426,8 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         image_urls_str = row[COL_IMAGE_URLS] if len(row) > COL_IMAGE_URLS else ""
         media_id = row[COL_MEDIA_ID] if len(row) > COL_MEDIA_ID else ""
         caption = row[COL_CAPTION] if len(row) > COL_CAPTION else ""
+        title_e = row[COL_TITLE] if len(row) > COL_TITLE else ""
+        cta_f = row[COL_CTA] if len(row) > COL_CTA else ""
         retry_count = int(row[COL_RETRY]) if len(row) > COL_RETRY and row[COL_RETRY].strip() else 0
 
         # Skip: already posted or permanently failed
@@ -400,21 +444,26 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         if status not in ("ready", "retry") and not force_post_num:
             continue
 
-        # Parse schedule time
-        date_str = row[COL_DATE] if len(row) > COL_DATE else ""
-        time_str = row[COL_TIME] if len(row) > COL_TIME else ""
-        scheduled = parse_schedule_time(date_str, time_str)
+        # Parse schedule time（A/D がシリアル数値でも解釈）
+        date_val = row[COL_DATE] if len(row) > COL_DATE else ""
+        time_val = row[COL_TIME] if len(row) > COL_TIME else ""
+        scheduled = parse_schedule_time(date_val, time_val)
 
         if force_post_num:
             # Force: ignore schedule
             pass
         elif scheduled is None:
             continue
-        elif not (scheduled <= now <= scheduled + timedelta(minutes=window_minutes)):
-            # Not within the posting window
-            # But also catch overdue posts (up to 2 hours late)
-            if not (now - timedelta(hours=2) <= scheduled <= now):
-                continue
+        elif scheduled > now:
+            continue
+        elif scheduled <= now <= scheduled + timedelta(minutes=window_minutes):
+            # 予定時刻〜その後 window 分まで
+            pass
+        elif (now - scheduled) <= timedelta(hours=catchup_h):
+            # ウィンドウは逃したが catchup 時間内なら投稿（15分 cron + GAS 取りこぼし対策）
+            pass
+        else:
+            continue
 
         try:
             image_urls = json.loads(image_urls_str)
@@ -425,6 +474,8 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
             "row_num": row_num,
             "post_num": post_num,
             "caption": caption,
+            "title_e": title_e,
+            "cta_f": cta_f,
             "image_urls": image_urls,
             "status": status,
             "retry_count": retry_count,
@@ -435,20 +486,27 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
 
 
 def count_posts_today(rows):
-    """Count how many posts were already made today."""
+    """Count how many posts were already made today (JST). A列シリアル対応。"""
     now = datetime.now(JST)
-    today_md = f"{now.month}/{now.day}"         # "3/19"
-    today_full = now.strftime("%Y-%m-%d")        # "2026-03-19"
-    today_slash = now.strftime("%Y/%m/%d")       # "2026/03/19"
+    today_d = now.date()
+    today_md = f"{now.month}/{now.day}"
+    today_full = now.strftime("%Y-%m-%d")
+    today_slash = now.strftime("%Y/%m/%d")
     count = 0
     for row in rows:
         status = row[COL_STATUS] if len(row) > COL_STATUS else ""
         if status != "posted":
             continue
-        date = (row[COL_DATE] if len(row) > COL_DATE else "").strip()
-        if date in (today_md, today_full, today_slash):
+        cell = row[COL_DATE] if len(row) > COL_DATE else ""
+        ymd = _parse_date_to_ymd(cell)
+        if ymd:
+            if date(ymd[0], ymd[1], ymd[2]) == today_d:
+                count += 1
+                continue
+        date_s = str(cell).strip() if cell is not None else ""
+        if date_s in (today_md, today_full, today_slash):
             count += 1
-        elif f"/{now.month}/{now.day}" in date or f"-{now.month:02d}-{now.day:02d}" in date:
+        elif f"/{now.month}/{now.day}" in date_s or f"-{now.month:02d}-{now.day:02d}" in date_s:
             count += 1
     return count
 
@@ -518,6 +576,17 @@ def main():
         print(f"\n{'─'*50}")
         print(f"Posting: {p['post_num']}")
         print(f"{'─'*50}")
+
+        bf = build_metadata_fixes(
+            p["row_num"],
+            str(p["post_num"]),
+            str(p.get("title_e", "")),
+            str(p.get("cta_f", "")),
+            str(p.get("caption", "")),
+        )
+        if bf:
+            write_cells(service, bf)
+            print("  ↪ E/F の自動投稿プレースホルダをフォルダ名・キャプションで補正しました")
 
         # Mark as posting
         update_post_status(service, p["row_num"], "posting",

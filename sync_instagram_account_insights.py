@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,6 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
 
@@ -140,7 +142,6 @@ WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
 # ========== 認証 ==========
 
 def get_google_credentials() -> Credentials:
-    """Google 認証（クラウド版: ブラウザ再認証なし）"""
     GOOGLE_AUTH_DIR.mkdir(parents=True, exist_ok=True)
     creds: Optional[Credentials] = None
     if TOKEN_FILE.exists():
@@ -148,14 +149,29 @@ def get_google_credentials() -> Credentials:
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            with TOKEN_FILE.open("w", encoding="utf-8") as f:
-                f.write(creds.to_json())
+            _token_reauth_happened = False
         else:
-            raise FileNotFoundError(
-                "token.json が無効で、クラウド環境では再認証できません。\n"
-                "ローカルで python3 utils/sync_instagram_account_insights.py を実行して token.json を再生成し、\n"
-                "GitHub Secret GOOGLE_TOKEN_JSON を更新してください。"
-            )
+            if not CREDS_FILE.exists():
+                raise FileNotFoundError(f"credentials.json が見つかりません: {CREDS_FILE}")
+            flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_FILE), GOOGLE_SCOPES)
+            creds = flow.run_local_server(port=0)
+            _token_reauth_happened = True
+        with TOKEN_FILE.open("w", encoding="utf-8") as f:
+            f.write(creds.to_json())
+        if _token_reauth_happened:
+            print("⚠️  ブラウザ再認証が実行されました。GitHub Secrets を自動同期します...")
+            _sync_script = Path(__file__).resolve().parent / "sync_secrets_to_github.py"
+            if _sync_script.exists():
+                import subprocess as _sp
+                _result = _sp.run(
+                    [sys.executable, str(_sync_script)],
+                    capture_output=True, text=True,
+                    cwd=str(Path(__file__).resolve().parent.parent),
+                )
+                if _result.returncode == 0:
+                    print("✅ GitHub Secrets 同期完了")
+                else:
+                    print(f"❌ Secret 同期失敗: {_result.stderr[:200]}")
     return creds
 
 
