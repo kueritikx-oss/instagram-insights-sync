@@ -143,11 +143,11 @@ def main():
     days_left = (expiry - now).total_seconds() / 86400
     print(f"📅 有効期限: {expiry.strftime('%Y-%m-%d')} (残り {days_left:.0f} 日)")
 
-    if days_left > 30:
-        print(f"✅ 残り {days_left:.0f} 日。更新不要。")
+    if days_left > 45:
+        print(f"✅ 残り {days_left:.0f} 日。更新不要（75%ルール: 45日で更新推奨）。")
         return
 
-    print(f"\n⚠️ 残り {days_left:.0f} 日。自動延長を実行...")
+    print(f"\n⚠️ 残り {days_left:.0f} 日（≤45日）。75%ルールにより自動延長を実行...")
     new_token = refresh_token()
 
     if not new_token:

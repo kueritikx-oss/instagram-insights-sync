@@ -1,10 +1,12 @@
-# 毎週月曜 JST 9:00 に Instagram トークンの有効期限をチェック。
-# 残り30日以内なら自動で60日延長し GitHub Secret を更新する。
+# 週2回（月・木 JST 10:00）Instagram トークンの有効期限をチェック。
+# 残り45日以内なら自動で60日延長し GitHub Secret を更新する。
+# 75%ルール: 60日トークンの45日目で更新。週2回実行で障害窓を最小化。
 name: Refresh Instagram Token
 
 on:
   schedule:
-    - cron: '0 0 * * 1'
+    # 月・木 JST 10:00 = UTC 01:00
+    - cron: '0 1 * * 1,4'
   workflow_dispatch:
 
 permissions:
@@ -36,3 +38,9 @@ jobs:
           META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: python scripts/refresh_instagram_token.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
