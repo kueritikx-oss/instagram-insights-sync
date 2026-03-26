@@ -23,7 +23,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-TOKEN_FILE = "タッキー/02_SNS集客/instagram-auto-post/token.json"
+import os as _os
+_auth_dir = _os.environ.get("INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR", "タッキー/02_SNS集客/instagram-auto-post")
+TOKEN_FILE = _os.path.join(_auth_dir, "token.json")
 SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 SHEET_NAME = "Instagram投稿毎データ"
 
