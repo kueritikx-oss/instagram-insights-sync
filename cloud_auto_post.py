@@ -56,8 +56,9 @@ COL_STATUS = 92       # CO: 投稿ステータス
 COL_IMAGE_URLS = 93   # CP: 画像URLs (JSON array)
 COL_MEDIA_ID = 94     # CQ: メディアID
 COL_ERROR = 95        # CR: 投稿エラー
-COL_RETRY = 96        # CS: リトライ回数
-COL_LAST_ATTEMPT = 97 # CT: 最終投稿試行
+# NOTE: CS(96) は insights v2.0 の COL_MEDIA_TYPE が使用中。衝突回避で CU 以降に移動
+COL_RETRY = 98        # CU: リトライ回数（旧CS→CU に移動。v2.0列衝突回避 2026-03-27）
+COL_LAST_ATTEMPT = 99 # CV: 最終投稿試行（旧CT→CV に移動。同上）
 
 MAX_RETRIES = 3
 CONTAINER_POLL_MAX = 60  # seconds
