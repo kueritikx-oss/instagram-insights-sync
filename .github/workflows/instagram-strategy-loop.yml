@@ -1,0 +1,135 @@
+# Instagram戦略ループ自動実行
+# - 毎週月曜 JST 9:30（UTC 0:30）: weekly レビュー
+# - 毎月1日 JST 10:00（UTC 1:00）: monthly 分析 + hooks フック銀行更新
+# - 手動トリガー: 任意のモードを実行可能
+name: Instagram Strategy Loop
+
+on:
+  schedule:
+    # 毎週月曜 JST 9:30 = UTC 0:30
+    - cron: '30 0 * * 1'
+    # 毎月1日 JST 10:00 = UTC 1:00
+    - cron: '0 1 1 * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '実行モード (weekly / monthly / hooks / all)'
+        required: false
+        default: 'weekly'
+        type: choice
+        options:
+          - weekly
+          - monthly
+          - hooks
+          - all
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  strategy-loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Create auth dir and write credentials
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+        run: |
+          mkdir -p auth
+          printf '%s' "$GOOGLE_CREDENTIALS_JSON" > auth/credentials.json
+          printf '%s' "$GOOGLE_TOKEN_JSON" > auth/token.json
+          sha256sum auth/token.json > /tmp/token_hash_before.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pynacl
+
+      - name: Determine execution mode
+        id: mode
+        run: |
+          # workflow_dispatch の場合は入力値を使う
+          if [ -n "${{ inputs.mode }}" ]; then
+            echo "mode=${{ inputs.mode }}" >> $GITHUB_OUTPUT
+            echo "📋 Manual trigger: mode=${{ inputs.mode }}"
+          else
+            # cron の場合: 曜日と日付で判定
+            DAY_OF_MONTH=$(TZ=Asia/Tokyo date +%d)
+            DAY_OF_WEEK=$(TZ=Asia/Tokyo date +%u)
+            if [ "$DAY_OF_MONTH" = "01" ]; then
+              # 毎月1日 → monthly + hooks
+              echo "mode=monthly_and_hooks" >> $GITHUB_OUTPUT
+              echo "📋 Monthly trigger (1st of month)"
+            elif [ "$DAY_OF_WEEK" = "1" ]; then
+              # 月曜 → weekly
+              echo "mode=weekly" >> $GITHUB_OUTPUT
+              echo "📋 Weekly trigger (Monday)"
+            else
+              echo "mode=skip" >> $GITHUB_OUTPUT
+              echo "⏭️  No matching schedule, skipping"
+            fi
+          fi
+
+      # ====== Weekly Review ======
+      - name: Run weekly review
+        if: >-
+          steps.mode.outputs.mode == 'weekly' ||
+          steps.mode.outputs.mode == 'all'
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          PYTHONUNBUFFERED: '1'
+        run: |
+          echo "📊 週次戦略レビューを実行中..."
+          python instagram_strategy_loop.py weekly
+
+      # ====== Monthly Analysis ======
+      - name: Run monthly analysis
+        if: >-
+          steps.mode.outputs.mode == 'monthly' ||
+          steps.mode.outputs.mode == 'monthly_and_hooks' ||
+          steps.mode.outputs.mode == 'all'
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          PYTHONUNBUFFERED: '1'
+        run: |
+          echo "📈 月次戦略分析を実行中..."
+          python instagram_strategy_loop.py monthly
+
+      # ====== Hook Bank Update ======
+      - name: Update hook bank
+        if: >-
+          steps.mode.outputs.mode == 'hooks' ||
+          steps.mode.outputs.mode == 'monthly_and_hooks' ||
+          steps.mode.outputs.mode == 'all'
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          PYTHONUNBUFFERED: '1'
+        run: |
+          echo "🎣 フック銀行を更新中..."
+          python instagram_strategy_loop.py hooks --top 20
+
+      # ====== Token write-back ======
+      - name: Save Google token if changed
+        if: always()
+        env:
+          INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          GH_PAT: ${{ secrets.GH_PAT }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          sha256sum auth/token.json > /tmp/token_hash_after.txt
+          if ! diff -q /tmp/token_hash_before.txt /tmp/token_hash_after.txt > /dev/null 2>&1; then
+            echo "🔑 Token changed, saving to GitHub Secret..."
+            python scripts/save_google_token.py
+          else
+            echo "✅ Token unchanged, skipping save"
+          fi
