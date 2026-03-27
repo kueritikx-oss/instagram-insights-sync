@@ -578,8 +578,8 @@ def run_weekly(posts: List[dict], weekly_data: List[dict], dry_run: bool, servic
     print(report)
 
     if not dry_run and service:
-        _write_strategy_sheet(service, "週次レビュー", report, today)
-        print(f"\n✅ 「{STRATEGY_SHEET_NAME}」シートに書き込みました")
+        _write_weekly_sheet(service, posts, this_week, last_week, weekly_data, today)
+        print(f"\n✅ 「戦略ループ_週次」シートに構造化テーブル+書式付きで書き込みました")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -757,8 +757,8 @@ def run_monthly(posts: List[dict], weekly_data: List[dict], dry_run: bool, servi
     print(report)
 
     if not dry_run and service:
-        _write_strategy_sheet(service, "月次分析", report, today)
-        print(f"\n✅ 「{STRATEGY_SHEET_NAME}」シートに書き込みました")
+        _write_monthly_sheet(service, posts, this_month, weekly_data, today)
+        print(f"\n✅ 「戦略ループ_月次」シートに構造化テーブル+書式付きで書き込みました")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -855,9 +855,9 @@ def run_hooks(posts: List[dict], dry_run: bool, top_n: int, service=None):
     report = "\n".join(output)
     print(report)
 
-    if not dry_run and service and hook_bank_data:
-        _write_hook_bank(service, hook_bank_data)
-        print(f"\n✅ 「{HOOK_BANK_SHEET_NAME}」シートに{len(hook_bank_data)}件書き込みました")
+    if not dry_run and service:
+        _write_hook_bank(service, hook_winners[:top_n], hook_success, posts, top_n)
+        print(f"\n✅ 「{HOOK_BANK_SHEET_NAME}」シートに構造化テーブル+書式付きで書き込みました")
 
 
 # ═══════════════════════════════════════════════════════════
@@ -982,58 +982,715 @@ def _experiment_list(service):
         print("📋 実験管理シートがまだありません。`--add` で最初の実験を登録すると自動作成されます")
 
 
+# ── 書式ユーティリティ ─────────────────────────────────────
+def rgb(r, g, b):
+    return {"red": r / 255, "green": g / 255, "blue": b / 255}
+
+# カラーパレット
+C_BLUE = rgb(26, 115, 232)
+C_GREEN = rgb(52, 168, 83)
+C_RED = rgb(234, 67, 53)
+C_YELLOW = rgb(251, 188, 4)
+C_PURPLE = rgb(142, 68, 173)
+C_GRAY = rgb(154, 160, 166)
+C_LIGHT_GRAY = rgb(245, 245, 245)
+C_LIGHT_GREEN = rgb(230, 255, 230)
+C_LIGHT_RED = rgb(255, 230, 230)
+C_LIGHT_YELLOW = rgb(255, 250, 230)
+C_WHITE = rgb(255, 255, 255)
+
+
 # ── シート書き込み ─────────────────────────────────────────
-def _ensure_sheet_exists(service, sheet_name: str, headers: List[str] = None):
-    """タブが存在しなければ作成する"""
+def _ensure_sheet_exists(service, sheet_name: str) -> int:
+    """タブが存在しなければ作成し、sheetIdを返す"""
     meta = service.spreadsheets().get(spreadsheetId=POSTDATA_SHEET_ID).execute()
-    existing = [s["properties"]["title"] for s in meta["sheets"]]
-    if sheet_name not in existing:
+    for s in meta["sheets"]:
+        if s["properties"]["title"] == sheet_name:
+            return s["properties"]["sheetId"]
+    # 作成
+    resp = service.spreadsheets().batchUpdate(
+        spreadsheetId=POSTDATA_SHEET_ID,
+        body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
+    ).execute()
+    time.sleep(0.5)
+    return resp["replies"][0]["addSheet"]["properties"]["sheetId"]
+
+
+def _clear_and_write(service, sheet_name: str, rows: List[list]):
+    """シートをクリアしてデータを書き込む"""
+    service.spreadsheets().values().clear(
+        spreadsheetId=POSTDATA_SHEET_ID,
+        range=f"'{sheet_name}'!A:Z",
+    ).execute()
+    if rows:
+        service.spreadsheets().values().update(
+            spreadsheetId=POSTDATA_SHEET_ID,
+            range=f"'{sheet_name}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows},
+        ).execute()
+
+
+def _apply_formatting(service, sheet_id: int, format_requests: list):
+    """書式設定を一括適用"""
+    if format_requests:
         service.spreadsheets().batchUpdate(
             spreadsheetId=POSTDATA_SHEET_ID,
-            body={"requests": [{"addSheet": {"properties": {"title": sheet_name}}}]},
+            body={"requests": format_requests},
         ).execute()
-        time.sleep(0.5)
-        if headers:
-            service.spreadsheets().values().update(
-                spreadsheetId=POSTDATA_SHEET_ID,
-                range=f"'{sheet_name}'!A1",
-                valueInputOption="USER_ENTERED",
-                body={"values": [headers]},
-            ).execute()
 
 
-def _write_strategy_sheet(service, mode_name: str, report: str, date: datetime):
-    _ensure_sheet_exists(service, STRATEGY_SHEET_NAME,
-                         ["日付", "モード", "レポート"])
-    lines = report.split("\n")
-    # 1セルにレポート全文を入れる
-    service.spreadsheets().values().append(
-        spreadsheetId=POSTDATA_SHEET_ID,
-        range=f"'{STRATEGY_SHEET_NAME}'!A:C",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[date.strftime("%Y-%m-%d"), mode_name, report]]},
-    ).execute()
+def _fmt_section_header(sheet_id: int, row: int, color: dict, cols: int = 10):
+    """セクションヘッダー行の書式"""
+    return {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": row, "endRowIndex": row + 1,
+                      "startColumnIndex": 0, "endColumnIndex": cols},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": color,
+                "textFormat": {"bold": True, "fontSize": 12, "foregroundColor": C_WHITE},
+            }},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)",
+        }
+    }
 
 
-def _write_hook_bank(service, data: List[list]):
-    headers = ["日付", "番号", "タイトル", "フック型", "カテゴリ", "CTA",
-               "リーチ", "保存", "シェア", "EGスコア"]
-    _ensure_sheet_exists(service, HOOK_BANK_SHEET_NAME, headers)
+def _fmt_table_header(sheet_id: int, row: int, cols: int = 10):
+    """テーブルヘッダー行の書式（薄グレー＋太字）"""
+    return {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": row, "endRowIndex": row + 1,
+                      "startColumnIndex": 0, "endColumnIndex": cols},
+            "cell": {"userEnteredFormat": {
+                "backgroundColor": C_LIGHT_GRAY,
+                "textFormat": {"bold": True, "fontSize": 10},
+            }},
+            "fields": "userEnteredFormat(backgroundColor,textFormat)",
+        }
+    }
 
-    # 既存データをクリアして最新で上書き
-    service.spreadsheets().values().update(
-        spreadsheetId=POSTDATA_SHEET_ID,
-        range=f"'{HOOK_BANK_SHEET_NAME}'!A2",
-        valueInputOption="USER_ENTERED",
-        body={"values": data},
-    ).execute()
+
+def _fmt_row_color(sheet_id: int, row: int, color: dict, cols: int = 10):
+    """行全体に背景色を設定"""
+    return {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": row, "endRowIndex": row + 1,
+                      "startColumnIndex": 0, "endColumnIndex": cols},
+            "cell": {"userEnteredFormat": {"backgroundColor": color}},
+            "fields": "userEnteredFormat(backgroundColor)",
+        }
+    }
+
+
+def _fmt_col_widths(sheet_id: int, widths: dict):
+    """列幅設定"""
+    reqs = []
+    for col, px in widths.items():
+        reqs.append({
+            "updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS",
+                          "startIndex": col, "endIndex": col + 1},
+                "properties": {"pixelSize": px},
+                "fields": "pixelSize",
+            }
+        })
+    return reqs
+
+
+def _fmt_font(sheet_id: int, total_rows: int, cols: int = 10):
+    """全体フォント設定"""
+    return {
+        "repeatCell": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": total_rows,
+                      "startColumnIndex": 0, "endColumnIndex": cols},
+            "cell": {"userEnteredFormat": {"textFormat": {"fontFamily": "Noto Sans JP"}}},
+            "fields": "userEnteredFormat(textFormat.fontFamily)",
+        }
+    }
+
+
+# ── 週次レビュー書き込み ─────────────────────────────────────
+def _write_weekly_sheet(service, posts, this_week, last_week, weekly_data, today):
+    sheet_name = "戦略ループ_週次"
+    sid = _ensure_sheet_exists(service, sheet_name)
+
+    all_reaches = sorted([p["reach_1d"] for p in posts])
+    all_saves = sorted([p["saves_1d"] for p in posts])
+    scored = sorted(this_week, key=composite_score, reverse=True)
+    top3 = scored[:3]
+    worst3 = scored[-3:] if len(scored) >= 3 else scored
+
+    avg_reach = mean_val([p["reach_1d"] for p in this_week])
+    avg_saves = mean_val([p["saves_1d"] for p in this_week])
+    avg_shares = mean_val([p["shares_1d"] for p in this_week])
+    avg_prof = mean_val([p["profile_1d"] for p in this_week])
+    total_follows = sum(p["follows_1d"] for p in this_week)
+    avg_nf_pct = mean_val([p["reach_nf_1d"] / p["reach_1d"] * 100
+                           for p in this_week if p["reach_1d"] > 0])
+    prev_reach = mean_val([p["reach_1d"] for p in last_week]) if last_week else 0
+    reach_delta = ((avg_reach / prev_reach) - 1) * 100 if prev_reach > 0 else 0
+
+    rows = []
+    fmts = []
+    r = 0  # current row tracker
+
+    # ── セクション1: ヘルスチェック ──
+    rows.append([f"📊 週次戦略レビュー  {today.strftime('%Y-%m-%d')}", "", "",
+                 f"投稿数: {len(this_week)}", "", f"全期間: {len(posts)}投稿"])
+    fmts.append(_fmt_section_header(sid, r, C_BLUE))
+    r += 1
+    rows.append([])
+    r += 1
+
+    rows.append(["① ヘルスチェック（5秒概観）"])
+    fmts.append(_fmt_section_header(sid, r, C_GREEN))
+    r += 1
+
+    rows.append(["指標", "今週", "前週比", "判定"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    health_data = [
+        ("平均リーチ", f"{avg_reach:,.0f}", f"{reach_delta:+.1f}%",
+         "✅" if reach_delta > 0 else "⚠️"),
+        ("平均保存", f"{avg_saves:,.1f}", f"(中央値: {median_val(all_saves):,.0f})",
+         "✅" if avg_saves >= median_val(all_saves) else "⚠️"),
+        ("平均シェア", f"{avg_shares:,.1f}", "", ""),
+        ("平均プロフ", f"{avg_prof:,.1f}", "", ""),
+        ("新規フォロー", str(total_follows), "", ""),
+        ("非フォロワー率", f"{avg_nf_pct:.1f}%", "",
+         "✅ 発見タブ好調" if avg_nf_pct >= 30 else "⚠️ 発見タブ弱い"),
+    ]
+    for label, val, delta, status in health_data:
+        rows.append([label, val, delta, status])
+        if "✅" in status:
+            fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 4))
+        elif "⚠️" in status:
+            fmts.append(_fmt_row_color(sid, r, C_LIGHT_YELLOW, 4))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション2: TOP3 ──
+    rows.append(["② TOP3（シェア40%+保存30%+プロフ20%+いいね10%）"])
+    fmts.append(_fmt_section_header(sid, r, rgb(66, 133, 244)))
+    r += 1
+
+    rows.append(["順位", "番号", "タイトル", "リーチ", "保存", "シェア", "プロフ",
+                 "CTA", "カテゴリ", "フック型"])
+    fmts.append(_fmt_table_header(sid, r))
+    r += 1
+
+    for i, p in enumerate(top3, 1):
+        hooks_str = "・".join(p["hooks"]) if p["hooks"] else "—"
+        rows.append([f"🥇🥈🥉"[i-1] if i <= 3 else str(i),
+                     p["post_num"], p["title"][:40],
+                     p["reach_1d"], p["saves_1d"], p["shares_1d"], p["profile_1d"],
+                     p["cta"], p["category"], hooks_str])
+        fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション3: WORST3 ──
+    rows.append(["③ WORST3（改善ポイント特定）"])
+    fmts.append(_fmt_section_header(sid, r, C_RED))
+    r += 1
+
+    rows.append(["順位", "番号", "タイトル", "リーチ", "保存", "シェア", "プロフ",
+                 "CTA", "カテゴリ", "フック型"])
+    fmts.append(_fmt_table_header(sid, r))
+    r += 1
+
+    for i, p in enumerate(worst3, 1):
+        hooks_str = "・".join(p["hooks"]) if p["hooks"] else "—"
+        rows.append([str(i), p["post_num"], p["title"][:40],
+                     p["reach_1d"], p["saves_1d"], p["shares_1d"], p["profile_1d"],
+                     p["cta"], p["category"], hooks_str])
+        fmts.append(_fmt_row_color(sid, r, C_LIGHT_RED))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション4: カテゴリ別 ──
+    rows.append(["④ カテゴリ別パフォーマンス"])
+    fmts.append(_fmt_section_header(sid, r, C_PURPLE))
+    r += 1
+
+    cat_stats = defaultdict(lambda: {"reach": [], "saves": [], "shares": [], "count": 0})
+    for p in this_week:
+        c = cat_stats[p["category"]]
+        c["reach"].append(p["reach_1d"])
+        c["saves"].append(p["saves_1d"])
+        c["shares"].append(p["shares_1d"])
+        c["count"] += 1
+
+    rows.append(["カテゴリ", "投稿数", "平均リーチ", "平均保存", "平均シェア"])
+    fmts.append(_fmt_table_header(sid, r, 5))
+    r += 1
+
+    for cat, s in sorted(cat_stats.items(), key=lambda x: mean_val(x[1]["reach"]), reverse=True):
+        rows.append([cat, s["count"], round(mean_val(s["reach"])),
+                     round(mean_val(s["saves"]), 1), round(mean_val(s["shares"]), 1)])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション5: CTA別 ──
+    rows.append(["⑤ CTA別パフォーマンス"])
+    fmts.append(_fmt_section_header(sid, r, C_YELLOW))
+    r += 1
+
+    cta_stats = defaultdict(lambda: {"reach": [], "saves": [], "prof": [], "count": 0})
+    for p in this_week:
+        c = cta_stats[p["cta"] or "未分類"]
+        c["reach"].append(p["reach_1d"])
+        c["saves"].append(p["saves_1d"])
+        c["prof"].append(p["profile_1d"])
+        c["count"] += 1
+
+    rows.append(["CTA", "投稿数", "平均リーチ", "平均保存", "平均プロフ"])
+    fmts.append(_fmt_table_header(sid, r, 5))
+    r += 1
+
+    for cta, s in sorted(cta_stats.items(), key=lambda x: mean_val(x[1]["reach"]), reverse=True):
+        rows.append([cta, s["count"], round(mean_val(s["reach"])),
+                     round(mean_val(s["saves"]), 1), round(mean_val(s["prof"]), 1)])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション6: フック型別 ──
+    rows.append(["⑥ フック型別パフォーマンス"])
+    fmts.append(_fmt_section_header(sid, r, rgb(142, 68, 173)))
+    r += 1
+
+    hook_stats = defaultdict(lambda: {"reach": [], "saves": [], "count": 0})
+    for p in this_week:
+        for h in p["hooks"]:
+            hook_stats[h]["reach"].append(p["reach_1d"])
+            hook_stats[h]["saves"].append(p["saves_1d"])
+            hook_stats[h]["count"] += 1
+        if not p["hooks"]:
+            hook_stats["フックなし"]["reach"].append(p["reach_1d"])
+            hook_stats["フックなし"]["saves"].append(p["saves_1d"])
+            hook_stats["フックなし"]["count"] += 1
+
+    rows.append(["フック型", "使用回数", "平均リーチ", "平均保存"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    for hook, s in sorted(hook_stats.items(), key=lambda x: mean_val(x[1]["reach"]), reverse=True):
+        rows.append([hook, s["count"], round(mean_val(s["reach"])),
+                     round(mean_val(s["saves"]), 1)])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション7: 最強組み合わせTOP5 ──
+    rows.append(["⑦ カテゴリ×フック 最強組み合わせTOP5"])
+    fmts.append(_fmt_section_header(sid, r, rgb(234, 67, 53)))
+    r += 1
+
+    cross = defaultdict(lambda: {"reach": [], "saves": [], "count": 0})
+    for p in this_week:
+        for h in (p["hooks"] or ["フックなし"]):
+            cross[f"{p['category']}×{h}"]["reach"].append(p["reach_1d"])
+            cross[f"{p['category']}×{h}"]["saves"].append(p["saves_1d"])
+            cross[f"{p['category']}×{h}"]["count"] += 1
+
+    rows.append(["組み合わせ", "投稿数", "平均リーチ", "平均保存"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    for combo, s in sorted(cross.items(), key=lambda x: mean_val(x[1]["reach"]), reverse=True)[:5]:
+        rows.append([combo, s["count"], round(mean_val(s["reach"])),
+                     round(mean_val(s["saves"]), 1)])
+        fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 4))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション8: 非フォロワーリーチ推移 ──
+    rows.append(["⑧ 非フォロワーリーチ推移（発見タブ＝成長エンジン）"])
+    fmts.append(_fmt_section_header(sid, r, C_GRAY))
+    r += 1
+
+    rows.append(["開始日", "終了日", "全体リーチ", "非FWリーチ", "非FW率"])
+    fmts.append(_fmt_table_header(sid, r, 5))
+    r += 1
+
+    if weekly_data:
+        for w in weekly_data[-8:]:
+            nf_pct = (w["reach_nf"] / w["reach_total"] * 100) if w["reach_total"] > 0 else 0
+            rows.append([w["start"], w["end"], w["reach_total"], w["reach_nf"],
+                         f"{nf_pct:.1f}%"])
+            r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション9: エバーグリーンTOP5 ──
+    rows.append(["⑨ エバーグリーンTOP5（7日÷1日リーチ。1.0超=伸び続け）"])
+    fmts.append(_fmt_section_header(sid, r, rgb(52, 168, 83)))
+    r += 1
+
+    rows.append(["番号", "タイトル", "EGスコア", "1日リーチ", "7日リーチ"])
+    fmts.append(_fmt_table_header(sid, r, 5))
+    r += 1
+
+    eg_posts = [(p, evergreen_score(p)) for p in this_week if evergreen_score(p) is not None]
+    for p, eg in sorted(eg_posts, key=lambda x: x[1], reverse=True)[:5]:
+        rows.append([p["post_num"], p["title"][:40], eg, p["reach_1d"], p["reach_7d"]])
+        if eg >= 1.5:
+            fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 5))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション10: 次週アクション ──
+    rows.append(["⑩ 次週のアクション（ICE式優先度）"])
+    fmts.append(_fmt_section_header(sid, r, rgb(26, 115, 232)))
+    r += 1
+
+    rows.append(["優先度", "アクション", "ICEスコア"])
+    fmts.append(_fmt_table_header(sid, r, 3))
+    r += 1
+
+    actions = []
+    top_cross_sorted = sorted(cross.items(), key=lambda x: mean_val(x[1]["reach"]), reverse=True)
+    if top_cross_sorted:
+        actions.append(("🔥", f"最強の組み合わせ「{top_cross_sorted[0][0]}」で新規投稿を作る", 26))
+    if avg_nf_pct < 30:
+        actions.append(("📢", "発見タブ対策: 分類型/タブー型フックで非FWリーチを狙う", 23))
+    if avg_saves < median_val(all_saves):
+        actions.append(("💾", "保存率UP: リスト・図解形式で「保存推奨」CTAを入れる", 24))
+    top_hooks_set = set()
+    for p in top3:
+        top_hooks_set.update(p["hooks"])
+    if top_hooks_set:
+        actions.append(("🎯", f"TOP3共通フック「{'・'.join(top_hooks_set)}」を次週も使う", 26))
+
+    for emoji, action, ice in actions[:4]:
+        rows.append([emoji, action, ice])
+        r += 1
+
+    # ── 書き込み＋書式適用 ──
+    _clear_and_write(service, sheet_name, rows)
+
+    # 列幅
+    fmts.extend(_fmt_col_widths(sid, {
+        0: 200, 1: 100, 2: 280, 3: 100, 4: 80, 5: 80, 6: 80, 7: 100, 8: 120, 9: 140
+    }))
+    # フォント
+    fmts.append(_fmt_font(sid, r))
+
+    _apply_formatting(service, sid, fmts)
+
+
+# ── 月次分析書き込み ─────────────────────────────────────
+def _write_monthly_sheet(service, posts, this_month, weekly_data, today):
+    sheet_name = "戦略ループ_月次"
+    sid = _ensure_sheet_exists(service, sheet_name)
+
+    overall_reach = mean_val([p["reach_1d"] for p in this_month])
+    rows = []
+    fmts = []
+    r = 0
+
+    # タイトル
+    rows.append([f"📈 月次戦略分析  {today.strftime('%Y-%m-%d')}",
+                 "", "", f"投稿数: {len(this_month)}", "", f"全期間: {len(posts)}投稿"])
+    fmts.append(_fmt_section_header(sid, r, C_BLUE))
+    r += 1
+    rows.append([])
+    r += 1
+
+    # ── ピラーヒートマップ ──
+    rows.append(["① コンテンツピラーヒートマップ"])
+    fmts.append(_fmt_section_header(sid, r, rgb(142, 68, 173)))
+    r += 1
+
+    pillar_data = defaultdict(lambda: {
+        "reach": [], "save_rate": [], "share_rate": [], "prof_rate": [],
+        "follows": [], "count": 0
+    })
+    for p in this_month:
+        pd = pillar_data[p["category"]]
+        pd["reach"].append(p["reach_1d"])
+        pd["follows"].append(p["follows_1d"])
+        if p["reach_1d"] > 0:
+            pd["save_rate"].append(p["saves_1d"] / p["reach_1d"] * 100)
+            pd["share_rate"].append(p["shares_1d"] / p["reach_1d"] * 100)
+            pd["prof_rate"].append(p["profile_1d"] / p["reach_1d"] * 100)
+        pd["count"] += 1
+
+    rows.append(["ピラー", "投稿数", "平均リーチ", "保存率", "シェア率", "プロフ率", "FW数", "判定"])
+    fmts.append(_fmt_table_header(sid, r, 8))
+    r += 1
+
+    for pillar, d in sorted(pillar_data.items(), key=lambda x: mean_val(x[1]["reach"]), reverse=True):
+        rv = mean_val(d["reach"])
+        mark = "🟢" if rv > overall_reach * 1.2 else ("🔴" if rv < overall_reach * 0.8 else "🟡")
+        rows.append([pillar, d["count"], round(rv),
+                     f"{mean_val(d['save_rate']):.1f}%",
+                     f"{mean_val(d['share_rate']):.1f}%",
+                     f"{mean_val(d['prof_rate']):.1f}%",
+                     sum(d["follows"]), mark])
+        color = C_LIGHT_GREEN if "🟢" in mark else (C_LIGHT_RED if "🔴" in mark else C_LIGHT_YELLOW)
+        fmts.append(_fmt_row_color(sid, r, color, 8))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── エバーグリーンスコア分布 ──
+    rows.append(["② エバーグリーンスコア分布（7日÷1日リーチ）"])
+    fmts.append(_fmt_section_header(sid, r, C_GREEN))
+    r += 1
+
+    eg_scores = [(p, evergreen_score(p)) for p in this_month if evergreen_score(p) is not None]
+    if eg_scores:
+        eg_count = sum(1 for _, eg in eg_scores if eg >= 1.5)
+        grow_count = sum(1 for _, eg in eg_scores if 1.0 <= eg < 1.5)
+        spike_count = sum(1 for _, eg in eg_scores if eg < 1.0)
+
+        rows.append(["タイプ", "投稿数", "割合"])
+        fmts.append(_fmt_table_header(sid, r, 3))
+        r += 1
+        rows.append(["🌿 エバーグリーン (EG≥1.5)", eg_count,
+                     f"{eg_count/len(eg_scores)*100:.0f}%"])
+        fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 3))
+        r += 1
+        rows.append(["✅ 成長型 (1.0≤EG<1.5)", grow_count, ""])
+        r += 1
+        rows.append(["⚡ スパイク型 (EG<1.0)", spike_count, ""])
+        r += 1
+        rows.append(["平均EGスコア", round(mean_val([eg for _, eg in eg_scores]), 2), ""])
+        r += 1
+
+        rows.append([])
+        r += 1
+        rows.append(["エバーグリーンTOP5（リポスト最優先）"])
+        fmts.append(_fmt_section_header(sid, r, rgb(52, 168, 83)))
+        r += 1
+        rows.append(["番号", "タイトル", "EGスコア", "1日リーチ", "7日リーチ"])
+        fmts.append(_fmt_table_header(sid, r, 5))
+        r += 1
+        for p, eg in sorted(eg_scores, key=lambda x: x[1], reverse=True)[:5]:
+            rows.append([p["post_num"], p["title"][:40], eg, p["reach_1d"], p["reach_7d"]])
+            fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 5))
+            r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── ベンチマーク比較 ──
+    rows.append(["③ グローバルベンチマーク比較（2026 Sprout Social/Buffer基準）"])
+    fmts.append(_fmt_section_header(sid, r, C_BLUE))
+    r += 1
+
+    rows.append(["指標", "今月の値", "ベンチマーク", "判定"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    avg_er = mean_val([(p["likes_1d"] + p["saves_1d"] + p["comments_1d"] + p["shares_1d"]) /
+                       p["reach_1d"] * 100 for p in this_month if p["reach_1d"] > 0])
+    avg_sr = mean_val([p["saves_1d"] / p["reach_1d"] * 100 for p in this_month if p["reach_1d"] > 0])
+    avg_shr = mean_val([p["shares_1d"] / p["reach_1d"] * 100 for p in this_month if p["reach_1d"] > 0])
+    avg_nf = mean_val([p["reach_nf_1d"] / p["reach_1d"] * 100
+                       for p in this_month if p["reach_1d"] > 0])
+
+    benchmarks = [
+        ("エンゲージメント率", f"{avg_er:.1f}%", "4.0-7.0%", avg_er >= 4.0),
+        ("保存率", f"{avg_sr:.1f}%", "1.0-2.0%", avg_sr >= 1.0),
+        ("DMシェア率", f"{avg_shr:.1f}%", "0.5-1.0%", avg_shr >= 0.5),
+        ("非フォロワーリーチ", f"{avg_nf:.1f}%", "30-60%", avg_nf >= 30),
+    ]
+    for name, val, bench, ok in benchmarks:
+        mark = "🟢 世界基準超え" if ok else "🔴 要改善"
+        rows.append([name, val, bench, mark])
+        fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN if ok else C_LIGHT_RED, 4))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── ピラー配分提案 ──
+    rows.append(["④ 来月のピラー配分提案"])
+    fmts.append(_fmt_section_header(sid, r, C_YELLOW))
+    r += 1
+
+    rows.append(["ピラー", "スコア", "推奨配分", "現状配分", "方向"])
+    fmts.append(_fmt_table_header(sid, r, 5))
+    r += 1
+
+    pillar_scores = {}
+    for pillar, d in pillar_data.items():
+        if d["count"] >= 2:
+            r_norm = mean_val(d["reach"]) / overall_reach if overall_reach > 0 else 0
+            sr_norm = mean_val(d["save_rate"]) / 2.0
+            pr_norm = mean_val(d["prof_rate"]) / 2.0
+            shr_norm = mean_val(d["share_rate"]) / 1.0
+            pillar_scores[pillar] = r_norm * 0.3 + sr_norm * 0.3 + pr_norm * 0.2 + shr_norm * 0.2
+
+    total_score = sum(pillar_scores.values()) if pillar_scores else 1
+    for pillar, score in sorted(pillar_scores.items(), key=lambda x: x[1], reverse=True):
+        recommended = score / total_score * 100
+        current = pillar_data[pillar]["count"] / len(this_month) * 100
+        arrow = "↑ 増やす" if recommended > current + 5 else (
+            "↓ 減らす" if recommended < current - 5 else "→ 維持")
+        rows.append([pillar, round(score, 2), f"{recommended:.0f}%", f"{current:.0f}%", arrow])
+        r += 1
+
+    # ── 書き込み＋書式適用 ──
+    _clear_and_write(service, sheet_name, rows)
+    fmts.extend(_fmt_col_widths(sid, {
+        0: 200, 1: 100, 2: 120, 3: 100, 4: 100, 5: 100, 6: 80, 7: 140
+    }))
+    fmts.append(_fmt_font(sid, r))
+    _apply_formatting(service, sid, fmts)
+
+
+# ── フック銀行書き込み ─────────────────────────────────────
+def _write_hook_bank(service, hook_winners, hook_success, posts, top_n):
+    sheet_name = HOOK_BANK_SHEET_NAME
+    sid = _ensure_sheet_exists(service, sheet_name)
+
+    rows = []
+    fmts = []
+    r = 0
+
+    median_reach = median_val([p["reach_1d"] for p in posts])
+    threshold = median_reach * 2
+
+    rows.append([f"🎣 フック銀行  更新: {datetime.now().strftime('%Y-%m-%d')}",
+                 "", "", f"2x閾値: リーチ {threshold:,.0f}以上"])
+    fmts.append(_fmt_section_header(sid, r, rgb(234, 67, 53)))
+    r += 1
+    rows.append([])
+    r += 1
+
+    # フック型成功率
+    rows.append(["フック型 成功率ランキング"])
+    fmts.append(_fmt_section_header(sid, r, C_PURPLE))
+    r += 1
+
+    rows.append(["フック型", "使用回数", "2x超え", "成功率", "平均リーチ"])
+    fmts.append(_fmt_table_header(sid, r, 5))
+    r += 1
+
+    for h, s in sorted(hook_success.items(),
+                       key=lambda x: x[1]["winner"] / max(x[1]["total"], 1), reverse=True):
+        rate = s["winner"] / s["total"] * 100 if s["total"] > 0 else 0
+        rows.append([h, s["total"], s["winner"], f"{rate:.0f}%",
+                     round(mean_val(s["avg_reach"]))])
+        if rate >= 30:
+            fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 5))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # 2x超えフック一覧
+    rows.append([f"2x超えフック一覧 TOP{top_n}"])
+    fmts.append(_fmt_section_header(sid, r, rgb(66, 133, 244)))
+    r += 1
+
+    rows.append(["#", "日付", "番号", "タイトル", "フック型", "カテゴリ", "CTA",
+                 "リーチ", "保存", "シェア", "EGスコア"])
+    fmts.append(_fmt_table_header(sid, r, 11))
+    r += 1
+
+    for i, p in enumerate(hook_winners[:top_n], 1):
+        hooks_str = "・".join(p["hooks"]) if p["hooks"] else "—"
+        eg = evergreen_score(p)
+        rows.append([i, p["date"].strftime("%m/%d"), p["post_num"], p["title"][:40],
+                     hooks_str, p["category"], p["cta"],
+                     p["reach_1d"], p["saves_1d"], p["shares_1d"],
+                     eg if eg else ""])
+        if i <= 3:
+            fmts.append(_fmt_row_color(sid, r, C_LIGHT_GREEN, 11))
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # リミックス候補
+    rows.append(["💡 リミックス候補（TOP組み合わせ × 未テストカテゴリ）"])
+    fmts.append(_fmt_section_header(sid, r, C_GREEN))
+    r += 1
+
+    rows.append(["カテゴリ", "フック型", "ステータス"])
+    fmts.append(_fmt_table_header(sid, r, 3))
+    r += 1
+
+    top_hooks_list = sorted(hook_success.items(),
+                            key=lambda x: mean_val(x[1]["avg_reach"]), reverse=True)[:3]
+    cat_hook_used = defaultdict(set)
+    for p in posts:
+        for h in p["hooks"]:
+            cat_hook_used[p["category"]].add(h)
+
+    remix_count = 0
+    for hook_name, _ in top_hooks_list:
+        for cat in CATEGORY_KEYWORDS.keys():
+            if hook_name not in cat_hook_used.get(cat, set()):
+                rows.append([cat, hook_name, "未テスト！試す価値あり"])
+                fmts.append(_fmt_row_color(sid, r, C_LIGHT_YELLOW, 3))
+                r += 1
+                remix_count += 1
+                if remix_count >= 8:
+                    break
+        if remix_count >= 8:
+            break
+
+    # 書き込み
+    _clear_and_write(service, sheet_name, rows)
+    fmts.extend(_fmt_col_widths(sid, {
+        0: 80, 1: 80, 2: 80, 3: 300, 4: 140, 5: 120, 6: 100,
+        7: 80, 8: 60, 9: 60, 10: 80
+    }))
+    fmts.append(_fmt_font(sid, r))
+    _apply_formatting(service, sid, fmts)
 
 
 def _append_experiment(service, row: list):
     headers = ["登録日", "実験ID", "仮説", "テスト変数",
                "Impact", "Confidence", "Ease", "ICE合計",
                "ステータス", "テスト投稿番号", "結果", "学び", "次のアクション"]
-    _ensure_sheet_exists(service, EXPERIMENT_SHEET_NAME, headers)
+    sid = _ensure_sheet_exists(service, EXPERIMENT_SHEET_NAME)
+
+    # ヘッダーが無ければ書く
+    try:
+        existing = service.spreadsheets().values().get(
+            spreadsheetId=POSTDATA_SHEET_ID,
+            range=f"'{EXPERIMENT_SHEET_NAME}'!A1:M1",
+        ).execute()
+        if not existing.get("values"):
+            raise ValueError("empty")
+    except Exception:
+        service.spreadsheets().values().update(
+            spreadsheetId=POSTDATA_SHEET_ID,
+            range=f"'{EXPERIMENT_SHEET_NAME}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [headers]},
+        ).execute()
+        # ヘッダー書式
+        _apply_formatting(service, sid, [
+            _fmt_section_header(sid, 0, C_BLUE, 13),
+            _fmt_font(sid, 1, 13),
+        ] + _fmt_col_widths(sid, {0: 100, 1: 120, 2: 300, 3: 100, 4: 70, 5: 80,
+                                   6: 60, 7: 80, 8: 80, 9: 120, 10: 200, 11: 200, 12: 200}))
+
     service.spreadsheets().values().append(
         spreadsheetId=POSTDATA_SHEET_ID,
         range=f"'{EXPERIMENT_SHEET_NAME}'!A:M",
