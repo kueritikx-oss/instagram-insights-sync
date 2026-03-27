@@ -1699,11 +1699,162 @@ def _append_experiment(service, row: list):
     ).execute()
 
 
+# ── ガイド（全体ツリー＋使い方）書き込み ─────────────────────
+def _write_guide_sheet(service):
+    sheet_name = "戦略ガイド"
+    sid = _ensure_sheet_exists(service, sheet_name)
+
+    rows = []
+    fmts = []
+    r = 0
+
+    # ── タイトル ──
+    rows.append(["🗺️ Instagram戦略ループ — 全体ガイド", "", "", "", "",
+                 f"最終更新: {datetime.now().strftime('%Y-%m-%d')}"])
+    fmts.append(_fmt_section_header(sid, r, C_BLUE, 6))
+    r += 1
+    rows.append([])
+    r += 1
+
+    # ── セクション1: Claude Codeへの聞き方 ──
+    rows.append(["① Claude Codeへの聞き方（コマンド不要）"])
+    fmts.append(_fmt_section_header(sid, r, C_GREEN, 6))
+    r += 1
+
+    rows.append(["こう聞くだけ", "→ やってくれること", "→ 見れる場所"])
+    fmts.append(_fmt_table_header(sid, r, 3))
+    r += 1
+
+    guide_rows = [
+        ("「次何投稿する？」", "最強の組み合わせ+フック+具体的な投稿案を提示", "戦略ループ_週次タブ"),
+        ("「今週どうだった？」", "TOP3/WORST3+クロス分析+アクション提案", "戦略ループ_週次タブ"),
+        ("「月の振り返り」", "ピラーヒートマップ+ベンチマーク+配分提案", "戦略ループ_月次タブ"),
+        ("「どのフックが効いてる？」", "フック型成功率+2x超え一覧+リミックス候補", "フック銀行タブ"),
+        ("「実験したい」", "データから仮説提案→ICEスコアで登録", "実験管理タブ"),
+        ("「リーチ伸びてる？」", "非フォロワーリーチ推移（8週分）", "戦略ループ_週次タブ"),
+        ("「リポスト候補は？」", "エバーグリーンスコアTOP5（伸び続ける投稿）", "フック銀行タブ"),
+        ("「全体どう？」", "ヘルス→戦略→フックを一括分析", "全タブ"),
+        ("「投稿の準備して」", "最強フック+組み合わせを提示→投稿案作成", "—"),
+        ("「スプシに書いて」", "分析結果をスプシのタブに書き込み", "該当タブ"),
+    ]
+    for ask, do, where in guide_rows:
+        rows.append([ask, do, where])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション2: タブ構成 ──
+    rows.append(["② このスプレッドシート内のタブ構成"])
+    fmts.append(_fmt_section_header(sid, r, rgb(142, 68, 173), 6))
+    r += 1
+
+    rows.append(["タブ名", "何が書いてある", "更新タイミング", "見るべき人"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    tabs = [
+        ("投稿毎データ①2026", "全投稿の98列メトリクス（リーチ・保存・シェア等）", "自動: 1日5回", "データの源。直接見なくてOK"),
+        ("戦略ループ_週次", "TOP3/WORST3、カテゴリ×CTA×フック分析、非FWリーチ推移", "自動: 毎週月曜 or 手動", "毎週月曜に確認"),
+        ("戦略ループ_月次", "ピラーヒートマップ、ベンチマーク比較、配分提案", "自動: 毎月1日 or 手動", "毎月初に確認"),
+        ("フック銀行", "2x超えフック一覧、成功率ランキング、リミックス候補", "自動: 毎月1日 or 手動", "投稿を作る前に確認"),
+        ("実験管理", "コンテンツ実験のICEスコア・仮説・結果・学び", "手動（実験登録時）", "実験の計画・振り返り時"),
+        ("Instagram_分析ビュー_2026", "7セクション分析ダッシュボード（既存）", "手動リビルド", "詳細な静的分析が必要な時"),
+        ("戦略ガイド", "← 今見てるこのタブ", "手動", "使い方がわからない時"),
+    ]
+    for name, content, timing, audience in tabs:
+        rows.append([name, content, timing, audience])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション3: データの流れツリー ──
+    rows.append(["③ データの流れ（上から下に流れる）"])
+    fmts.append(_fmt_section_header(sid, r, C_RED, 6))
+    r += 1
+
+    rows.append(["ステージ", "何が起きる", "データの流れ先", "自動/手動"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    flow = [
+        ("📡 Instagram API", "投稿のリーチ・保存・シェア等を取得", "→ 投稿毎データ W-CT列", "自動（1日5回）"),
+        ("📊 投稿分析", "パーセンタイル順位・考察を自動生成", "→ 投稿毎データ Q-V列", "自動（1日5回）"),
+        ("📋 メタデータ", "LF8・感情トリガー・意図を補完", "→ 投稿毎データ I-P列", "手動 or 依頼時"),
+        ("🔄 週次レビュー", "TOP3/WORST3、クロス分析、アクション提案", "→ 戦略ループ_週次タブ", "自動（毎週月曜）"),
+        ("📈 月次分析", "ピラーヒートマップ、ベンチマーク比較", "→ 戦略ループ_月次タブ", "自動（毎月1日）"),
+        ("🎣 フック銀行", "2x超えフック抽出、リミックス候補", "→ フック銀行タブ", "自動（毎月1日）"),
+        ("🧪 実験管理", "仮説登録→テスト→結果→学び", "→ 実験管理タブ", "手動"),
+        ("✍️ 投稿作成", "最強の組み合わせ+フックで投稿を作る", "→ sns_posts/posts/", "手動（Claude Code）"),
+        ("📮 自動投稿", "スケジュール通りにInstagramに投稿", "→ Instagram（API投稿）", "自動（15分ごと）"),
+        ("🔁 サイクル", "投稿結果がまたAPIで取得される → 最初に戻る", "→ 📡 Instagram API", "自動"),
+    ]
+    for stage, action, dest, auto in flow:
+        rows.append([stage, action, dest, auto])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション4: 分析の読み方 ──
+    rows.append(["④ 数字の読み方（ベンチマーク）"])
+    fmts.append(_fmt_section_header(sid, r, C_YELLOW, 6))
+    r += 1
+
+    rows.append(["指標", "見方", "🟢 世界基準超え", "🔴 要改善"])
+    fmts.append(_fmt_table_header(sid, r, 4))
+    r += 1
+
+    benchmarks = [
+        ("エンゲージメント率", "（いいね+保存+コメント+シェア）÷ リーチ", "4%以上", "4%未満"),
+        ("保存率", "保存数 ÷ リーチ", "1%以上", "1%未満"),
+        ("DMシェア率", "シェア数 ÷ リーチ", "0.5%以上", "0.5%未満"),
+        ("非フォロワーリーチ率", "非FWリーチ ÷ 全体リーチ", "30%以上", "30%未満"),
+        ("エバーグリーンスコア", "7日リーチ ÷ 1日リーチ", "1.5以上 = 伸び続け", "1.0未満 = スパイク型"),
+        ("総合スコア", "シェア×40% + 保存×30% + プロフ×20% + いいね×10%", "高いほどアルゴリズム好み", "—"),
+    ]
+    for name, how, good, bad in benchmarks:
+        rows.append([name, how, good, bad])
+        r += 1
+
+    rows.append([])
+    r += 1
+
+    # ── セクション5: 推奨サイクル ──
+    rows.append(["⑤ 推奨運用サイクル"])
+    fmts.append(_fmt_section_header(sid, r, C_BLUE, 6))
+    r += 1
+
+    rows.append(["いつ", "やること", "Claude Codeに言う言葉"])
+    fmts.append(_fmt_table_header(sid, r, 3))
+    r += 1
+
+    cycle = [
+        ("毎週月曜", "週次レビューを確認", "「今週どうだった？」"),
+        ("毎週月曜", "今週の投稿テーマ・フック・CTAを決定", "「次何投稿する？」"),
+        ("投稿を作る前", "フック銀行を確認", "「どのフックが効いてる？」"),
+        ("実験したい時", "仮説を立ててICEスコアで登録", "「実験やりたい」"),
+        ("毎月1日", "月次分析＋ピラー配分見直し", "「月の振り返り」"),
+        ("毎月1日", "フック銀行を最新に更新", "（自動で更新される）"),
+        ("四半期ごと", "全体の戦略を見直し", "「全体どう？」"),
+    ]
+    for when, what, say in cycle:
+        rows.append([when, what, say])
+        r += 1
+
+    # ── 書き込み＋書式適用 ──
+    _clear_and_write(service, sheet_name, rows)
+    fmts.extend(_fmt_col_widths(sid, {0: 180, 1: 350, 2: 250, 3: 200, 4: 100, 5: 150}))
+    fmts.append(_fmt_font(sid, r, 6))
+    _apply_formatting(service, sid, fmts)
+
+
 # ── メイン ─────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(
         description="Instagram戦略ループ — データ→洞察→仮説→実験→学習")
-    parser.add_argument("mode", choices=["weekly", "monthly", "hooks", "experiment"],
+    parser.add_argument("mode", choices=["weekly", "monthly", "hooks", "experiment", "guide"],
                         help="実行モード")
     parser.add_argument("--dry-run", action="store_true",
                         help="スプレッドシートに書き込まずレポートだけ表示")
@@ -1722,6 +1873,11 @@ def main():
 
     print(f"🔄 Google Sheets API に接続中...")
     service = get_service()
+
+    if args.mode == "guide":
+        _write_guide_sheet(service)
+        print("✅ 「戦略ガイド」タブを作成しました")
+        return
 
     if args.mode == "experiment":
         run_experiment(service, args, args.dry_run)
