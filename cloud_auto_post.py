@@ -293,6 +293,10 @@ def post_carousel(access_token, ig_user_id, image_urls, caption):
     4. Publish
     Returns (media_id, permalink)
     """
+    MAX_CAROUSEL_SLIDES = 20  # Instagram API上限
+    if len(image_urls) > MAX_CAROUSEL_SLIDES:
+        print(f"  WARNING: {len(image_urls)} images exceeds carousel limit ({MAX_CAROUSEL_SLIDES}). Truncating.")
+        image_urls = image_urls[:MAX_CAROUSEL_SLIDES]
     print(f"  Creating {len(image_urls)} child containers...")
     children = []
     for i, img_url in enumerate(image_urls):
@@ -430,7 +434,10 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         title_e = row[COL_TITLE] if len(row) > COL_TITLE else ""
         cta_f = row[COL_CTA] if len(row) > COL_CTA else ""
         try:
+            try:
             retry_count = int(row[COL_RETRY]) if len(row) > COL_RETRY and row[COL_RETRY].strip() else 0
+        except ValueError:
+            retry_count = 0
         except ValueError:
             retry_count = 0
 
