@@ -429,7 +429,10 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         caption = row[COL_CAPTION] if len(row) > COL_CAPTION else ""
         title_e = row[COL_TITLE] if len(row) > COL_TITLE else ""
         cta_f = row[COL_CTA] if len(row) > COL_CTA else ""
-        retry_count = int(row[COL_RETRY]) if len(row) > COL_RETRY and row[COL_RETRY].strip() else 0
+        try:
+            retry_count = int(row[COL_RETRY]) if len(row) > COL_RETRY and row[COL_RETRY].strip() else 0
+        except ValueError:
+            retry_count = 0
 
         # Skip: already posted or permanently failed
         if status == "posted" or media_id:
