@@ -434,10 +434,7 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         title_e = row[COL_TITLE] if len(row) > COL_TITLE else ""
         cta_f = row[COL_CTA] if len(row) > COL_CTA else ""
         try:
-            try:
             retry_count = int(row[COL_RETRY]) if len(row) > COL_RETRY and row[COL_RETRY].strip() else 0
-        except ValueError:
-            retry_count = 0
         except ValueError:
             retry_count = 0
 
