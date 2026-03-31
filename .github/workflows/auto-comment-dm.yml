@@ -1,0 +1,83 @@
+name: Auto Comment-to-DM Pipeline
+
+on:
+  schedule:
+    # 15分ごと（Webhookのフォールバック。取りこぼし補完用）
+    # JST 7:00-23:00 = UTC 22:00-14:00
+    - cron: '*/15 22-23,0-14 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DM送信しない（確認のみ）'
+        required: false
+        default: 'false'
+        type: boolean
+      check_only:
+        description: 'コメント一覧表示のみ'
+        required: false
+        default: 'false'
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: instagram-comment-dm
+  cancel-in-progress: false
+
+jobs:
+  comment-dm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c1da2cb3dab735e1b8c35cda82  # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests google-auth google-api-python-client
+
+      - name: Create auth dir and write credentials
+        run: |
+          mkdir -p auth
+          echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > auth/credentials.json
+          echo '${{ secrets.GOOGLE_TOKEN_JSON }}' > auth/token.json
+          PRE_HASH=$(sha256sum auth/token.json | cut -d' ' -f1)
+          echo "PRE_TOKEN_HASH=$PRE_HASH" >> "$GITHUB_ENV"
+
+      - name: Run Comment→DM Pipeline
+        env:
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_CHECK_ONLY: ${{ inputs.check_only }}
+        run: |
+          FLAGS=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            FLAGS="--dry-run"
+          elif [ "$INPUT_CHECK_ONLY" = "true" ]; then
+            FLAGS="--check"
+          fi
+          python3 instagram_comment_dm.py $FLAGS
+
+      - name: Auto-save refreshed Google Token
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          POST_HASH=$(sha256sum auth/token.json | cut -d' ' -f1)
+          if [ "$PRE_TOKEN_HASH" != "$POST_HASH" ]; then
+            echo "🔄 Google Token was refreshed — saving to Secret..."
+            python3 scripts/save_google_token.py
+          else
+            echo "✅ Google Token unchanged"
+          fi
