@@ -56,9 +56,8 @@ COL_STATUS = 92       # CO: 投稿ステータス
 COL_IMAGE_URLS = 93   # CP: 画像URLs (JSON array)
 COL_MEDIA_ID = 94     # CQ: メディアID
 COL_ERROR = 95        # CR: 投稿エラー
-# NOTE: CS(96) は insights v2.0 の COL_MEDIA_TYPE が使用中。衝突回避で CU 以降に移動
-COL_RETRY = 98        # CU: リトライ回数（旧CS→CU に移動。v2.0列衝突回避 2026-03-27）
-COL_LAST_ATTEMPT = 99 # CV: 最終投稿試行（旧CT→CV に移動。同上）
+COL_RETRY = 96        # CS: リトライ回数
+COL_LAST_ATTEMPT = 97 # CT: 最終投稿試行
 
 MAX_RETRIES = 3
 CONTAINER_POLL_MAX = 60  # seconds
@@ -81,8 +80,7 @@ def get_instagram_config():
     if not access_token:
         # Local fallback
         config_path = os.environ.get("INSTAGRAM_CONFIG_PATH",
-            os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/"
-                               "MacDocuments/01_事業/事業 Cursor/タッキー/"
+            os.path.expanduser("~/Projects/事業/タッキー/"
                                "02_SNS集客/instagram-auto-post/instagram_insights_config.json"))
         if os.path.exists(config_path):
             with open(config_path) as f:
@@ -108,8 +106,7 @@ def get_sheets_service():
     else:
         # Local fallback
         token_path = os.environ.get("GOOGLE_TOKEN_PATH",
-            os.path.expanduser("~/Library/Mobile Documents/com~apple~CloudDocs/"
-                               "MacDocuments/01_事業/事業 Cursor/タッキー/"
+            os.path.expanduser("~/Projects/事業/タッキー/"
                                "02_SNS集客/instagram-auto-post/token.json"))
         with open(token_path) as f:
             info = json.load(f)
@@ -282,21 +279,138 @@ def get_media_permalink(access_token, media_id):
 
 
 # ---------------------------------------------------------------------------
+# Post a single reel (video)
+# ---------------------------------------------------------------------------
+def create_reel_container(access_token, ig_user_id, video_url, caption,
+                          cover_url=None, share_to_feed=True):
+    """Create a reel container. Returns container ID."""
+    url = f"{GRAPH_API_BASE}/{ig_user_id}/media"
+    data = {
+        "media_type": "REELS",
+        "video_url": video_url,
+        "caption": caption,
+        "share_to_feed": "true" if share_to_feed else "false",
+        "access_token": access_token,
+    }
+    if cover_url:
+        data["cover_url"] = cover_url
+    resp = requests.post(url, data=data, timeout=60)
+
+    if resp.status_code != 200:
+        raise RuntimeError(f"Reel container creation failed: {resp.text[:300]}")
+
+    return resp.json()["id"]
+
+
+def poll_reel_status(access_token, container_id, max_wait=180):
+    """Poll reel container status. Reels take longer than carousels."""
+    import time as _time
+    intervals = [2, 4, 8, 10, 10, 15, 15, 15, 15, 15, 15, 15, 15, 15]
+    elapsed = 0
+    for wait in intervals:
+        _time.sleep(wait)
+        elapsed += wait
+        url = f"{GRAPH_API_BASE}/{container_id}"
+        resp = requests.get(url, params={
+            "fields": "status_code,status",
+            "access_token": access_token,
+        }, timeout=15)
+
+        if resp.status_code != 200:
+            continue
+
+        data = resp.json()
+        status = data.get("status_code")
+        print(f"    Reel status: {status} ({elapsed}s elapsed)")
+        if status == "FINISHED":
+            return True
+        elif status == "ERROR":
+            detail = data.get("status", "")
+            raise RuntimeError(f"Reel container ERROR: {detail}")
+        elif status == "EXPIRED":
+            raise RuntimeError(f"Reel container EXPIRED")
+        # IN_PROGRESS: continue
+
+    raise RuntimeError(f"Reel container polling timed out after {elapsed}s")
+
+
+def post_reel(access_token, ig_user_id, video_url, caption, cover_url=None):
+    """
+    Full reel posting pipeline:
+    1. Create reel container
+    2. Poll status (longer timeout for video processing)
+    3. Publish
+    Returns (media_id, permalink)
+    """
+    print(f"  Creating reel container...")
+    container_id = create_reel_container(
+        access_token, ig_user_id, video_url, caption, cover_url
+    )
+    print(f"    Container: {container_id}")
+
+    print(f"  Polling reel status (may take 1-3 min for video processing)...")
+    poll_reel_status(access_token, container_id)
+    print(f"    Status: FINISHED")
+
+    print(f"  Publishing reel...")
+    media_id = publish_container(access_token, ig_user_id, container_id)
+    print(f"    Media ID: {media_id}")
+
+    permalink = get_media_permalink(access_token, media_id)
+    print(f"    URL: {permalink}")
+
+    return media_id, permalink
+
+
+# ---------------------------------------------------------------------------
 # Post a single carousel
 # ---------------------------------------------------------------------------
+def _preflight_check_urls(image_urls):
+    """Pre-flight: verify all image URLs are reachable before creating containers.
+    Returns (ok: bool, failed_indices: list[int]).
+    """
+    failed = []
+    for i, url in enumerate(image_urls):
+        try:
+            resp = requests.head(url, timeout=10, allow_redirects=True)
+            if resp.status_code not in (200, 206):
+                # Fallback: GET with range header
+                resp = requests.get(url, timeout=10, headers={"Range": "bytes=0-0"})
+                if resp.status_code not in (200, 206):
+                    failed.append(i)
+        except Exception:
+            failed.append(i)
+    return len(failed) == 0, failed
+
+
 def post_carousel(access_token, ig_user_id, image_urls, caption):
     """
     Full carousel posting pipeline:
+    0. Pre-flight URL reachability check
     1. Create child containers
     2. Create carousel container
     3. Poll status
     4. Publish
     Returns (media_id, permalink)
     """
+    # Pre-flight: minimum slide count
+    MIN_CAROUSEL_SLIDES = 2
+    if len(image_urls) < MIN_CAROUSEL_SLIDES:
+        raise RuntimeError(f"Carousel requires {MIN_CAROUSEL_SLIDES}+ images, got {len(image_urls)}. Aborting.")
+
     MAX_CAROUSEL_SLIDES = 20  # Instagram API上限
     if len(image_urls) > MAX_CAROUSEL_SLIDES:
         print(f"  WARNING: {len(image_urls)} images exceeds carousel limit ({MAX_CAROUSEL_SLIDES}). Truncating.")
         image_urls = image_urls[:MAX_CAROUSEL_SLIDES]
+
+    # Pre-flight: URL reachability
+    print(f"  Pre-flight: checking {len(image_urls)} image URLs...")
+    urls_ok, failed_idx = _preflight_check_urls(image_urls)
+    if not urls_ok:
+        failed_urls = [f"#{i+1}: {image_urls[i][:50]}..." for i in failed_idx]
+        raise RuntimeError(f"Pre-flight FAILED: {len(failed_idx)} URL(s) unreachable:\n    " + "\n    ".join(failed_urls))
+    print(f"  Pre-flight: all {len(image_urls)} URLs OK ✓")
+
     print(f"  Creating {len(image_urls)} child containers...")
     children = []
     for i, img_url in enumerate(image_urls):
@@ -601,10 +715,26 @@ def main():
                            retry_count=p["retry_count"])
 
         try:
-            media_id, permalink = post_carousel(
-                access_token, ig_user_id,
-                p["image_urls"], p["caption"]
-            )
+            # Detect post type: reel (single video URL) vs carousel (JSON array of image URLs)
+            is_reel = False
+            if isinstance(p["image_urls"], list) and len(p["image_urls"]) == 1:
+                url_str = p["image_urls"][0]
+                if url_str.endswith((".mp4", ".mov")) or "video" in url_str.lower():
+                    is_reel = True
+
+            if is_reel:
+                video_url = p["image_urls"][0]
+                # Cover URL: use second item if available
+                cover_url = p["image_urls"][1] if len(p["image_urls"]) > 1 else None
+                media_id, permalink = post_reel(
+                    access_token, ig_user_id,
+                    video_url, p["caption"], cover_url
+                )
+            else:
+                media_id, permalink = post_carousel(
+                    access_token, ig_user_id,
+                    p["image_urls"], p["caption"]
+                )
 
             # Success
             update_post_status(
@@ -613,7 +743,7 @@ def main():
                 retry_count=p["retry_count"]
             )
             today_count += 1
-            print(f"  ✓ Posted successfully!")
+            print(f"  ✓ Posted successfully! ({'reel' if is_reel else 'carousel'})")
 
         except Exception as e:
             error_msg = str(e)[:500]

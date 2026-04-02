@@ -17,9 +17,7 @@ if os.environ.get("GITHUB_ACTIONS", "").lower() == "true":
     POST_FOLDER_ROOTS: List[Path] = []
 else:
     POST_FOLDER_ROOTS = [
-        _WORKSPACE / "タッキー/Cursor業務/sns_posts/posts/Instagram/1.Post",
         _WORKSPACE / "SNS/Instagram/1.Post",
-        _WORKSPACE / "タッキー/DEED_統合/03_SNS/Instagram/1.Post",
     ]
 
 # 自動投稿パイプラインがシートに入れる既知プレースホルダ（再発時にここへ追加）
