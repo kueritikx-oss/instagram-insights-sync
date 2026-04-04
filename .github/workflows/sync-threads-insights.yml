@@ -1,0 +1,63 @@
+# 1日5回（JST 9:30, 12:30, 15:30, 18:30, 21:30）Threads インサイトを取得しスプレッドシートに反映。
+# IG版と時刻をずらして API レート制限を分散。
+# JST 21:30 (UTC 12:30) にアカウントレベルインサイトも取得。
+name: Sync Threads Insights
+
+on:
+  schedule:
+    - cron: '30 0,3,6,9,12 * * *'  # UTC → JST 9:30, 12:30, 15:30, 18:30, 21:30
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ====== 投稿インサイト（毎回実行）======
+      - name: Sync Threads post insights
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          PYTHONUNBUFFERED: '1'
+        run: python sync_threads_insights.py
+
+      # ====== アカウントインサイト（JST 21:30 = UTC 12:30 のみ）======
+      - name: Sync Threads account insights
+        if: success()
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          HOUR_UTC=$(date -u +%H)
+          if [ "${HOUR_UTC}" = "12" ]; then
+            echo "Running account insights (JST 21:30)"
+            python sync_threads_insights.py --account --dry-run
+          else
+            echo "Account insights only at JST 21:30"
+          fi
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || echo "Alert skipped"

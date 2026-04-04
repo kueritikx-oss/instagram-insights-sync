@@ -658,9 +658,9 @@ def execute_post(service, token: str, user_id: str, post_info: dict,
             (row, COL_ERROR, ""),
         ])
 
-        # Threads URLをAA列（26）にも書き込み
+        # Threads URLをH列（COL_URL）に書き込み
         if permalink:
-            update_cell(service, row, 26, permalink)
+            update_cell(service, row, COL_URL, permalink)
 
         print(f"  ✅ 投稿成功: {post_num} → {permalink}")
         return True
