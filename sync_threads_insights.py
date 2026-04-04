@@ -2,7 +2,8 @@
 """
 Threadsインサイト同期スクリプト (sync_threads_insights.py)
 
-Threads APIから投稿毎のインサイトを取得し、スプレッドシートに書き込む。
+Instagram版と同じ1日後/7日後スナップショット方式。
+投稿からの経過時間に応じて、適切なブロックに1回だけ記録する。
 
 取得メトリクス (6種):
   - views, likes, replies, reposts, quotes, shares
@@ -13,30 +14,24 @@ Threads APIから投稿毎のインサイトを取得し、スプレッドシー
   - リプ/いいね比 = replies / likes
 
 スプレッドシート列マッピング:
-  W(22): views
-  X(23): likes（いいね）
-  Y(24): replies（リプライ数）
-  Z(25): reposts（リポスト数）
-  AA(26): shares（シェア数）
-  AB(27): quotes（引用数）
-  AC(28): (フォロー — API未提供)
-  AD(29): ER%
-  AE(30): 会話率%
-  AF(31): リプ/いいね比
-  AH(33): 取得日時
+  ── 1日後ブロック (24-48h) ──
+  W(22): views          X(23): likes       Y(24): replies
+  Z(25): reposts        AA(26): shares     AB(27): quotes
+  AD(29): ER%           AE(30): 会話率%    AF(31): リプ/いいね比
+  AG(32): 1d取得日時    AH(33): 1d_mode
+
+  ── 7日後ブロック (168-192h) ──
+  AV(47): views         AW(48): likes      AX(49): replies
+  AY(50): reposts       AZ(51): shares     BA(52): quotes
+  BB(53): ER%           BC(54): 会話率%    BD(55): リプ/いいね比
+  BE(56): 7d取得日時    BF(57): 7d_mode
 
 Usage:
-    # 全投稿のインサイト取得
-    python3 sync_threads_insights.py
-
-    # ドライラン（API呼び出しのみ、書き込みなし）
-    python3 sync_threads_insights.py --dry-run
-
-    # 特定投稿のみ
-    python3 sync_threads_insights.py --post T-001
-
-    # アカウントレベルインサイトも取得
-    python3 sync_threads_insights.py --account
+    python3 sync_threads_insights.py              # 通常実行（1d/7dスナップショット）
+    python3 sync_threads_insights.py --dry-run     # 書き込みなし確認
+    python3 sync_threads_insights.py --post T-001  # 特定投稿のみ
+    python3 sync_threads_insights.py --account     # アカウントレベルも取得
+    python3 sync_threads_insights.py --force        # 取得済みでも上書き
 """
 from __future__ import annotations
 
@@ -63,28 +58,47 @@ THREADS_SPREADSHEET_ID = "1hdBlZBn9s688f1ZwkTiO3suY27tJEHtXMEPkopLdBNI"
 THREADS_SHEET_NAME = "Threads投稿毎データ"
 DATA_START_ROW = 4
 
-# 列インデックス（0-based）
+# ── 列インデックス（0-based）────────────────────────────────────────
+
+# 基本情報
 COL_DATE = 0        # A: 日付
 COL_POST_NUM = 2    # C: 番号
+COL_TIME = 3        # D: 時刻
 COL_URL = 7         # H: URL
-COL_VIEWS = 22      # W: views
-COL_LIKES = 23      # X: いいね
-COL_REPLIES = 24    # Y: リプライ数
-COL_REPOSTS = 25    # Z: リポスト数
-COL_SHARES = 26     # AA: シェア数
-COL_QUOTES = 27     # AB: 引用数
-COL_ER = 29         # AD: ER%
-COL_CONV_RATE = 30  # AE: 会話率%
-COL_REPLY_LIKE = 31 # AF: リプ/いいね比
-COL_CAPTURED_AT = 33  # AH: 取得日時
+
+# 1日後ブロック (24-48h)
+COL_1D_VIEWS = 22      # W
+COL_1D_LIKES = 23      # X
+COL_1D_REPLIES = 24    # Y
+COL_1D_REPOSTS = 25    # Z
+COL_1D_SHARES = 26     # AA
+COL_1D_QUOTES = 27     # AB
+COL_1D_ER = 29         # AD
+COL_1D_CONV_RATE = 30  # AE
+COL_1D_REPLY_LIKE = 31 # AF
+COL_1D_CAPTURED_AT = 32  # AG
+COL_1D_MODE = 33       # AH
+
+# 7日後ブロック (168-192h)
+COL_7D_VIEWS = 47      # AV
+COL_7D_LIKES = 48      # AW
+COL_7D_REPLIES = 49    # AX
+COL_7D_REPOSTS = 50    # AY
+COL_7D_SHARES = 51     # AZ
+COL_7D_QUOTES = 52     # BA
+COL_7D_ER = 53         # BB
+COL_7D_CONV_RATE = 54  # BC
+COL_7D_REPLY_LIKE = 55 # BD
+COL_7D_CAPTURED_AT = 56  # BE
+COL_7D_MODE = 57       # BF
+
+# 自動投稿列（読み取り用）
 COL_STATUS = 41     # AP: 投稿ステータス
 COL_MEDIA_ID = 43   # AR: メディアID
 
-# 読み取り範囲を自動算出
-_MAX_COL_IDX = max(COL_DATE, COL_POST_NUM, COL_URL, COL_VIEWS, COL_LIKES,
-                   COL_REPLIES, COL_REPOSTS, COL_SHARES, COL_QUOTES,
-                   COL_ER, COL_CONV_RATE, COL_REPLY_LIKE, COL_CAPTURED_AT,
-                   COL_STATUS, COL_MEDIA_ID)
+# ── 読み取り範囲の自動算出 ──────────────────────────────────────────
+_ALL_COLS = {k: v for k, v in globals().items() if k.startswith("COL_") and isinstance(v, int)}
+_MAX_COL_IDX = max(_ALL_COLS.values())
 
 
 def _col_idx_to_letter(idx: int) -> str:
@@ -101,11 +115,17 @@ def _col_idx_to_letter(idx: int) -> str:
 
 SHEET_READ_END_COL = _col_idx_to_letter(_MAX_COL_IDX)
 
+# スナップショット判定閾値
+SNAPSHOT_1D_MIN_HOURS = 24
+SNAPSHOT_1D_MAX_HOURS = 72   # 3日以内なら「scheduled」、超えたら「backfill」
+SNAPSHOT_7D_MIN_HOURS = 168
+SNAPSHOT_7D_MAX_HOURS = 240  # 10日以内なら「scheduled」、超えたら「backfill」
+
 # タイムゾーン
 JST = timezone(timedelta(hours=9))
 
-# レート制限: Threads APIは控えめに
-API_CALL_DELAY = 1.0  # 投稿間1秒待機
+# レート制限
+API_CALL_DELAY = 1.0
 
 # Google Auth
 GOOGLE_AUTH_DIR = Path.home() / "Projects/事業/タッキー/02_SNS集客/instagram-auto-post"
@@ -196,10 +216,7 @@ def get_threads_user_id() -> str:
 def fetch_post_insights(token: str, media_id: str) -> dict:
     """投稿のインサイトを取得"""
     url = f"{THREADS_API_BASE}/{media_id}/insights"
-    params = {
-        "metric": POST_METRICS,
-        "access_token": token,
-    }
+    params = {"metric": POST_METRICS, "access_token": token}
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
     result = resp.json()
@@ -207,14 +224,11 @@ def fetch_post_insights(token: str, media_id: str) -> dict:
     metrics = {}
     for item in result.get("data", []):
         name = item["name"]
-        # lifetime metrics have a single value
         values = item.get("values", [])
         if values:
             metrics[name] = values[0].get("value", 0)
         else:
-            # total_value fallback
             metrics[name] = item.get("total_value", {}).get("value", 0)
-
     return metrics
 
 
@@ -227,9 +241,7 @@ def fetch_account_insights(token: str, user_id: str, days: int = 7) -> dict:
     url = f"{THREADS_API_BASE}/{user_id}/threads_insights"
     params = {
         "metric": "views,likes,replies,reposts,quotes",
-        "since": since,
-        "until": until,
-        "access_token": token,
+        "since": since, "until": until, "access_token": token,
     }
     resp = requests.get(url, params=params, timeout=30)
     resp.raise_for_status()
@@ -242,17 +254,12 @@ def fetch_account_insights(token: str, user_id: str, days: int = 7) -> dict:
         total = item.get("total_value", {}).get("value", 0)
         metrics[name] = total if total else sum(v.get("value", 0) for v in values)
 
-    # フォロワー数（別リクエスト、since/untilを無視する）
+    # フォロワー数
     try:
-        url2 = f"{THREADS_API_BASE}/{user_id}/threads_insights"
-        params2 = {
-            "metric": "followers_count",
-            "access_token": token,
-        }
-        resp2 = requests.get(url2, params=params2, timeout=30)
+        params2 = {"metric": "followers_count", "access_token": token}
+        resp2 = requests.get(url, params=params2, timeout=30)
         resp2.raise_for_status()
-        result2 = resp2.json()
-        for item in result2.get("data", []):
+        for item in resp2.json().get("data", []):
             if item["name"] == "followers_count":
                 vals = item.get("values", [])
                 metrics["followers_count"] = vals[0].get("value", 0) if vals else 0
@@ -262,15 +269,91 @@ def fetch_account_insights(token: str, user_id: str, days: int = 7) -> dict:
     return metrics
 
 
+# ── スナップショット判定 ──────────────────────────────────────────────
+
+def parse_post_datetime(date_str: str, time_str: str) -> datetime | None:
+    """日付+時刻文字列からdatetimeを生成"""
+    if not date_str:
+        return None
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=JST)
+        if time_str:
+            parts = time_str.replace("：", ":").split(":")
+            dt = dt.replace(hour=int(parts[0]), minute=int(parts[1]) if len(parts) > 1 else 0)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+def calc_metrics(metrics: dict) -> tuple:
+    """APIメトリクスから計算メトリクスを算出"""
+    views = metrics.get("views", 0)
+    likes = metrics.get("likes", 0)
+    replies = metrics.get("replies", 0)
+    reposts = metrics.get("reposts", 0)
+    shares = metrics.get("shares", 0)
+    quotes = metrics.get("quotes", 0)
+
+    total_eng = likes + replies + reposts + quotes + shares
+    er = round(total_eng / views * 100, 2) if views > 0 else 0
+    conv_rate = round(replies / views * 100, 2) if views > 0 else 0
+    reply_like = round(replies / likes, 2) if likes > 0 else 0
+
+    return er, conv_rate, reply_like
+
+
+def build_snapshot_updates(actual_row: int, metrics: dict, now_str: str,
+                           mode: str, block: str) -> list:
+    """スナップショットブロックの書き込みデータを構築"""
+    views = metrics.get("views", 0)
+    likes = metrics.get("likes", 0)
+    replies = metrics.get("replies", 0)
+    reposts = metrics.get("reposts", 0)
+    shares = metrics.get("shares", 0)
+    quotes = metrics.get("quotes", 0)
+    er, conv_rate, reply_like = calc_metrics(metrics)
+
+    if block == "1d":
+        return [
+            (actual_row, COL_1D_VIEWS, str(views)),
+            (actual_row, COL_1D_LIKES, str(likes)),
+            (actual_row, COL_1D_REPLIES, str(replies)),
+            (actual_row, COL_1D_REPOSTS, str(reposts)),
+            (actual_row, COL_1D_SHARES, str(shares)),
+            (actual_row, COL_1D_QUOTES, str(quotes)),
+            (actual_row, COL_1D_ER, f"{er}%"),
+            (actual_row, COL_1D_CONV_RATE, f"{conv_rate}%"),
+            (actual_row, COL_1D_REPLY_LIKE, str(reply_like)),
+            (actual_row, COL_1D_CAPTURED_AT, now_str),
+            (actual_row, COL_1D_MODE, mode),
+        ]
+    else:  # 7d
+        return [
+            (actual_row, COL_7D_VIEWS, str(views)),
+            (actual_row, COL_7D_LIKES, str(likes)),
+            (actual_row, COL_7D_REPLIES, str(replies)),
+            (actual_row, COL_7D_REPOSTS, str(reposts)),
+            (actual_row, COL_7D_SHARES, str(shares)),
+            (actual_row, COL_7D_QUOTES, str(quotes)),
+            (actual_row, COL_7D_ER, f"{er}%"),
+            (actual_row, COL_7D_CONV_RATE, f"{conv_rate}%"),
+            (actual_row, COL_7D_REPLY_LIKE, str(reply_like)),
+            (actual_row, COL_7D_CAPTURED_AT, now_str),
+            (actual_row, COL_7D_MODE, mode),
+        ]
+
+
 # ── メイン処理 ────────────────────────────────────────────────────────
 
 def sync_insights(service, token: str, dry_run: bool = False,
-                  target_post: str | None = None) -> dict:
-    """全投稿のインサイトを同期"""
+                  target_post: str | None = None,
+                  force: bool = False) -> dict:
+    """全投稿のインサイトを1日後/7日後スナップショット方式で同期"""
     rows = read_sheet_data(service)
-    now_str = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(JST)
+    now_str = now.strftime("%Y-%m-%d %H:%M")
 
-    stats = {"total": 0, "synced": 0, "skipped": 0, "errors": 0}
+    stats = {"total": 0, "1d_new": 0, "1d_skip": 0, "7d_new": 0, "7d_skip": 0, "errors": 0}
 
     for i, row in enumerate(rows):
         actual_row = DATA_START_ROW + i
@@ -278,52 +361,65 @@ def sync_insights(service, token: str, dry_run: bool = False,
         status = get_col_value(row, COL_STATUS)
         media_id = get_col_value(row, COL_MEDIA_ID)
 
-        # 特定投稿のみモード
         if target_post and post_num != target_post:
             continue
-
-        # published + media_id がある投稿のみ対象
         if status != "published" or not media_id:
             continue
 
         stats["total"] += 1
-        hook = get_col_value(row, 4)[:30]  # E列: タイトル
 
+        # 投稿日時を取得して経過時間を計算
+        date_str = get_col_value(row, COL_DATE)
+        time_str = get_col_value(row, COL_TIME)
+        post_dt = parse_post_datetime(date_str, time_str)
+        if not post_dt:
+            continue
+
+        hours_elapsed = (now - post_dt).total_seconds() / 3600
+        hook = get_col_value(row, 4)[:30]
+
+        # 1日後ブロック: 既に取得済みかチェック
+        has_1d = bool(get_col_value(row, COL_1D_CAPTURED_AT))
+        needs_1d = (not has_1d or force) and hours_elapsed >= SNAPSHOT_1D_MIN_HOURS
+
+        # 7日後ブロック: 既に取得済みかチェック
+        has_7d = bool(get_col_value(row, COL_7D_CAPTURED_AT))
+        needs_7d = (not has_7d or force) and hours_elapsed >= SNAPSHOT_7D_MIN_HOURS
+
+        if not needs_1d and not needs_7d:
+            if has_1d:
+                stats["1d_skip"] += 1
+            if has_7d:
+                stats["7d_skip"] += 1
+            continue
+
+        # API呼び出し（1d/7d両方必要でも1回で済む — lifetimeメトリクスだから）
         try:
             metrics = fetch_post_insights(token, media_id)
-
             views = metrics.get("views", 0)
             likes = metrics.get("likes", 0)
             replies = metrics.get("replies", 0)
-            reposts = metrics.get("reposts", 0)
-            shares = metrics.get("shares", 0)
-            quotes = metrics.get("quotes", 0)
+            er, _, _ = calc_metrics(metrics)
 
-            # 計算メトリクス
-            total_engagement = likes + replies + reposts + quotes + shares
-            er = round(total_engagement / views * 100, 2) if views > 0 else 0
-            conv_rate = round(replies / views * 100, 2) if views > 0 else 0
-            reply_like = round(replies / likes, 2) if likes > 0 else 0
+            print(f"  {post_num}: {hook}... ({hours_elapsed:.0f}h経過)")
+            print(f"    views={views} likes={likes} replies={replies} ER={er}%")
 
-            print(f"  {post_num}: {hook}...")
-            print(f"    views={views} likes={likes} replies={replies} "
-                  f"reposts={reposts} shares={shares} quotes={quotes} ER={er}%")
+            if needs_1d:
+                mode_1d = "scheduled" if hours_elapsed <= SNAPSHOT_1D_MAX_HOURS else "backfill"
+                print(f"    → 1日後ブロック書き込み (mode={mode_1d})")
+                if not dry_run:
+                    updates = build_snapshot_updates(actual_row, metrics, now_str, mode_1d, "1d")
+                    batch_update_cells(service, updates)
+                stats["1d_new"] += 1
 
-            if not dry_run:
-                batch_update_cells(service, [
-                    (actual_row, COL_VIEWS, str(views)),
-                    (actual_row, COL_LIKES, str(likes)),
-                    (actual_row, COL_REPLIES, str(replies)),
-                    (actual_row, COL_REPOSTS, str(reposts)),
-                    (actual_row, COL_SHARES, str(shares)),
-                    (actual_row, COL_QUOTES, str(quotes)),
-                    (actual_row, COL_ER, f"{er}%"),
-                    (actual_row, COL_CONV_RATE, f"{conv_rate}%"),
-                    (actual_row, COL_REPLY_LIKE, str(reply_like)),
-                    (actual_row, COL_CAPTURED_AT, now_str),
-                ])
+            if needs_7d:
+                mode_7d = "scheduled" if hours_elapsed <= SNAPSHOT_7D_MAX_HOURS else "backfill"
+                print(f"    → 7日後ブロック書き込み (mode={mode_7d})")
+                if not dry_run:
+                    updates = build_snapshot_updates(actual_row, metrics, now_str, mode_7d, "7d")
+                    batch_update_cells(service, updates)
+                stats["7d_new"] += 1
 
-            stats["synced"] += 1
             time.sleep(API_CALL_DELAY)
 
         except Exception as e:
@@ -335,30 +431,37 @@ def sync_insights(service, token: str, dry_run: bool = False,
 
 def main():
     parser = argparse.ArgumentParser(description="Threadsインサイト同期")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="書き込みせずに確認のみ")
-    parser.add_argument("--post", type=str, default=None,
-                        help="特定投稿のみ取得（T-001形式）")
-    parser.add_argument("--account", action="store_true",
-                        help="アカウントレベルインサイトも取得")
+    parser.add_argument("--dry-run", action="store_true", help="書き込みなし確認")
+    parser.add_argument("--post", type=str, default=None, help="特定投稿のみ（T-001形式）")
+    parser.add_argument("--account", action="store_true", help="アカウントレベルも取得")
+    parser.add_argument("--force", action="store_true", help="取得済みでも上書き")
     args = parser.parse_args()
 
     now = datetime.now(JST)
-    print(f"📊 Threadsインサイト同期 - {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
-    print(f"   DryRun: {args.dry_run} | ReadRange: A:{SHEET_READ_END_COL}")
+    print(f"📊 Threadsインサイト同期 v2.0 - {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
+    print(f"   DryRun: {args.dry_run} | Force: {args.force} | ReadRange: A:{SHEET_READ_END_COL}")
     print()
+
+    # 起動時バリデーション
+    for name, idx in _ALL_COLS.items():
+        if idx > _MAX_COL_IDX:
+            print(f"❌ FATAL: {name}={idx} > max={_MAX_COL_IDX}")
+            sys.exit(1)
 
     service = get_sheets_service()
     token = get_threads_token()
     user_id = get_threads_user_id()
 
     # 投稿インサイト
-    print("── 投稿インサイト ──")
+    print("── 投稿インサイト（1d/7d スナップショット）──")
     stats = sync_insights(service, token, dry_run=args.dry_run,
-                          target_post=args.post)
+                          target_post=args.post, force=args.force)
     print()
-    print(f"📋 結果: {stats['synced']}/{stats['total']}件同期 "
-          f"(skip={stats['skipped']}, err={stats['errors']})")
+    print(f"📋 結果: 対象{stats['total']}件")
+    print(f"   1日後: {stats['1d_new']}件新規 / {stats['1d_skip']}件スキップ")
+    print(f"   7日後: {stats['7d_new']}件新規 / {stats['7d_skip']}件スキップ")
+    if stats["errors"]:
+        print(f"   エラー: {stats['errors']}件")
 
     # アカウントインサイト
     if args.account:
@@ -369,7 +472,7 @@ def main():
             for k, v in sorted(acct.items()):
                 print(f"  {k}: {v:,}" if isinstance(v, int) else f"  {k}: {v}")
         except Exception as e:
-            print(f"  ❌ アカウントインサイト取得失敗: {e}")
+            print(f"  ❌ {e}")
 
     print()
     print("✅ 完了")
