@@ -76,7 +76,8 @@ COL_VIEWS = 22      # W: views
 COL_TOPIC_TAG = 40  # AO: トピックタグ
 # 自動投稿 (AP-AU) = IGのCO-CTに対応
 COL_STATUS = 41     # AP: 投稿ステータス
-COL_IMAGE_URLS = 42 # AQ: 画像URLs (JSON)
+COL_IMAGE_URL = 42  # AQ: 画像URL（単一画像 or JSON配列兼用）
+COL_IMAGE_URLS = 42 # AQ: 画像URLs (JSON) — COL_IMAGE_URLと同一列
 COL_MEDIA_ID = 43   # AR: メディアID
 COL_ERROR = 44      # AS: 投稿エラー
 COL_RETRY = 45      # AT: リトライ回数
@@ -503,7 +504,7 @@ def is_within_window(scheduled: datetime, now: datetime, window_minutes: int) ->
 
 def find_ready_posts(service, now: datetime, window_minutes: int) -> list:
     """投稿可能な行を検索"""
-    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:AJ500")
+    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:AU500")
     ready = []
 
     for i, row in enumerate(rows):
@@ -536,7 +537,7 @@ def find_ready_posts(service, now: datetime, window_minutes: int) -> list:
 
 def find_post_by_num(service, post_num: str) -> dict | None:
     """投稿番号で行を検索"""
-    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:AJ500")
+    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:AU500")
 
     for i, row in enumerate(rows):
         actual_row = DATA_START_ROW + i
@@ -611,16 +612,20 @@ def execute_post(service, token: str, user_id: str, post_info: dict,
                             (cp["row"], COL_MEDIA_ID, str(mid)),
                         ])
 
-        # カルーセル
+        # カルーセル（JSON配列の画像URL必須）
         elif post_type == "カルーセル" and image_urls_json:
-            urls = json.loads(image_urls_json)
-            media_id = post_carousel(token, user_id, urls, text, topic_tag)
+            try:
+                urls = json.loads(image_urls_json)
+                media_id = post_carousel(token, user_id, urls, text, topic_tag)
+            except json.JSONDecodeError:
+                print(f"  ⚠ カルーセルURLのJSON不正 → テキスト投稿にフォールバック")
+                media_id = post_text(token, user_id, text, topic_tag)
 
-        # 画像付き
-        elif post_type == "画像" and image_url:
+        # 画像付き（「画像」「テキスト+画像」等、image_urlがあれば画像投稿）
+        elif image_url and not image_url.startswith("["):
             media_id = post_image(token, user_id, image_url, text, topic_tag)
 
-        # テキストのみ（デフォルト）
+        # テキストのみ（画像URLなし or デフォルト）
         else:
             media_id = post_text(token, user_id, text, topic_tag)
 
