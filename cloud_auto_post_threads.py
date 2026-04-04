@@ -83,6 +83,23 @@ COL_ERROR = 44      # AS: 投稿エラー
 COL_RETRY = 45      # AT: リトライ回数
 COL_LAST_ATTEMPT = 46  # AU: 最終投稿試行
 
+# ── 読み取り範囲の自動算出（列定数から導出、ハードコード禁止） ──────────
+# COL_* の最大値から必要な列範囲を自動計算。
+# 新しい列を追加しても読み取り範囲不足が起きない。
+def _col_idx_to_letter(idx: int) -> str:
+    """0-based列インデックスをExcel列文字に変換（0=A, 25=Z, 26=AA, ...）"""
+    result = ""
+    n = idx
+    while True:
+        result = chr(ord("A") + n % 26) + result
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return result
+
+_MAX_COL_IDX = max(v for k, v in globals().items() if k.startswith("COL_") and isinstance(v, int))
+SHEET_READ_END_COL = _col_idx_to_letter(_MAX_COL_IDX)  # 現在: AU（46）
+
 # 制限・設定
 MAX_RETRIES = 3
 CONTAINER_POLL_MAX_SEC = 120  # コンテナ処理待ち最大秒
@@ -151,7 +168,7 @@ def read_sheet_data(service, range_str: str) -> list:
 
 def update_cell(service, row: int, col: int, value: str):
     """単一セルを更新"""
-    col_letter = chr(ord("A") + col) if col < 26 else chr(ord("A") + col // 26 - 1) + chr(ord("A") + col % 26)
+    col_letter = _col_idx_to_letter(col)
     cell = f"{THREADS_SHEET_NAME}!{col_letter}{row}"
     service.spreadsheets().values().update(
         spreadsheetId=THREADS_SPREADSHEET_ID,
@@ -165,10 +182,7 @@ def batch_update_cells(service, updates: list):
     """複数セルを一括更新。updates = [(row, col, value), ...]"""
     data = []
     for row, col, value in updates:
-        if col < 26:
-            col_letter = chr(ord("A") + col)
-        else:
-            col_letter = chr(ord("A") + col // 26 - 1) + chr(ord("A") + col % 26)
+        col_letter = _col_idx_to_letter(col)
         data.append({
             "range": f"{THREADS_SHEET_NAME}!{col_letter}{row}",
             "values": [[value]],
@@ -504,7 +518,7 @@ def is_within_window(scheduled: datetime, now: datetime, window_minutes: int) ->
 
 def find_ready_posts(service, now: datetime, window_minutes: int) -> list:
     """投稿可能な行を検索"""
-    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:AU500")
+    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
     ready = []
 
     for i, row in enumerate(rows):
@@ -537,7 +551,7 @@ def find_ready_posts(service, now: datetime, window_minutes: int) -> list:
 
 def find_post_by_num(service, post_num: str) -> dict | None:
     """投稿番号で行を検索"""
-    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:AU500")
+    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
 
     for i, row in enumerate(rows):
         actual_row = DATA_START_ROW + i
@@ -688,7 +702,16 @@ def main():
     now = datetime.now(JST)
     print(f"🧵 Threads自動投稿 - {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
     print(f"   Window: {args.window}min | DryRun: {args.dry_run}")
+    print(f"   ReadRange: A:{SHEET_READ_END_COL} (max COL idx={_MAX_COL_IDX})")
     print()
+
+    # ── 起動時バリデーション ──
+    # COL_* 定数が読み取り範囲内か検証（列追加時の範囲不足を防止）
+    col_constants = {k: v for k, v in globals().items() if k.startswith("COL_") and isinstance(v, int)}
+    for name, idx in col_constants.items():
+        if idx > _MAX_COL_IDX:
+            print(f"❌ FATAL: {name}={idx} が読み取り範囲 (max={_MAX_COL_IDX}) を超えています")
+            sys.exit(1)
 
     # サービス初期化
     service = get_sheets_service()
