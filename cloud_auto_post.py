@@ -60,6 +60,7 @@ COL_RETRY = 96        # CS: リトライ回数
 COL_LAST_ATTEMPT = 97 # CT: 最終投稿試行
 
 MAX_RETRIES = 3
+MAX_TRANSIENT_RETRIES = 12  # transientエラーは次のcronサイクルで再試行（15分×12=3時間猶予）
 CONTAINER_POLL_MAX = 60  # seconds
 CONTAINER_POLL_INTERVAL = [1, 2, 4, 8, 8, 8, 8, 8]  # exponential backoff
 POST_GAP_SECONDS = 60  # minimum gap between consecutive posts
@@ -747,15 +748,27 @@ def main():
 
         except Exception as e:
             error_msg = str(e)[:500]
+            is_transient = '"is_transient":true' in error_msg or '"is_transient": true' in error_msg
             new_retry = p["retry_count"] + 1
-            new_status = "retry" if new_retry < MAX_RETRIES else "failed"
+
+            if is_transient:
+                # Transient Meta API error: reset to "ready" so next cron cycle retries
+                # Don't count against permanent retry limit
+                if new_retry < MAX_TRANSIENT_RETRIES:
+                    new_status = "ready"
+                    print(f"  ⚡ Transient API error — reset to ready (attempt {new_retry}/{MAX_TRANSIENT_RETRIES})")
+                else:
+                    new_status = "failed"
+                    print(f"  ✗ Transient error exhausted {MAX_TRANSIENT_RETRIES} attempts. Marking failed.")
+            else:
+                new_status = "retry" if new_retry < MAX_RETRIES else "failed"
+                print(f"  ✗ Failed: {error_msg}")
+                print(f"  Retry {new_retry}/{MAX_RETRIES}. Status: {new_status}")
 
             update_post_status(
                 service, p["row_num"], new_status,
                 error=error_msg, retry_count=new_retry
             )
-            print(f"  ✗ Failed: {error_msg}")
-            print(f"  Retry {new_retry}/{MAX_RETRIES}. Status: {new_status}")
 
         # Gap between posts
         if len(due) > 1:
