@@ -645,6 +645,22 @@ def execute_post(service, oauth: OAuth1Session, post_info: dict,
 
     except Exception as e:
         error_msg = str(e)[:500]
+
+        # CreditsDepleted / rate limit はtransient — readyに戻して次回自動復帰
+        is_transient = any(kw in error_msg for kw in (
+            "CreditsDepleted", "Rate limit", "Too Many Requests",
+            "RemoteDisconnected", "Connection aborted", "429",
+        ))
+        if is_transient:
+            batch_update_cells(service, [
+                (row, COL_STATUS, "ready"),
+                (row, COL_ERROR, f"[transient] {error_msg[:200]}"),
+                (row, COL_LAST_ATTEMPT, now_str),
+            ])
+            print(f"  ⚠️ transientエラー: {post_num} → readyにリセット")
+            print(f"     {error_msg[:100]}")
+            return False
+
         retry_count = 0
         try:
             retry_count = int(get_col_value(data, COL_RETRY) or "0")
