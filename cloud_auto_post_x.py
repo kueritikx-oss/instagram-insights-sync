@@ -679,7 +679,7 @@ def main():
             print(f"❌ FATAL: {name}={idx} が読み取り範囲 (max={_MAX_COL_IDX}) を超えています")
             sys.exit(1)
 
-    if X_SPREADSHEET_ID == "1rHnDoMHUK_K0_f7MLxHltiU6Y2ATsz3ztKwdf2Zg8Hc":
+    if not X_SPREADSHEET_ID or "PLACEHOLDER" in X_SPREADSHEET_ID:
         print("❌ FATAL: X_SPREADSHEET_ID が未設定です")
         print("   スプレッドシートを作成し、IDを環境変数またはスクリプトに設定してください")
         sys.exit(1)
