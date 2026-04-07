@@ -46,11 +46,10 @@ X_API_BASE = "https://api.x.com"
 X_TWEET_URL = f"{X_API_BASE}/2/tweets"
 X_MEDIA_URL = f"{X_API_BASE}/2/media/upload"
 
-# スプレッドシート — タッキーが作成後にIDを設定
-X_SPREADSHEET_ID = os.environ.get(
-    "X_SPREADSHEET_ID",
-    "1rHnDoMHUK_K0_f7MLxHltiU6Y2ATsz3ztKwdf2Zg8Hc",  # ← 作成後に更新
-)
+# スプレッドシート
+_DEFAULT_X_SPREADSHEET_ID = "1rHnDoMHUK_K0_f7MLxHltiU6Y2ATsz3ztKwdf2Zg8Hc"
+_env_id = os.environ.get("X_SPREADSHEET_ID", "")
+X_SPREADSHEET_ID = _env_id if (_env_id and "PLACEHOLDER" not in _env_id) else _DEFAULT_X_SPREADSHEET_ID
 X_SHEET_NAME = "X投稿毎データ"
 DATA_START_ROW = 4  # ヘッダー3行の次
 
