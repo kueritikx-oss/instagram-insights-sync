@@ -44,7 +44,8 @@ from googleapiclient.discovery import build
 # X API
 X_API_BASE = "https://api.x.com"
 X_TWEET_URL = f"{X_API_BASE}/2/tweets"
-X_MEDIA_URL = f"{X_API_BASE}/2/media/upload"
+# メディアアップロードはv1.1（v2にはまだ無い）
+X_MEDIA_URL = "https://upload.twitter.com/1.1/media/upload.json"
 
 # スプレッドシート
 _DEFAULT_X_SPREADSHEET_ID = "1rHnDoMHUK_K0_f7MLxHltiU6Y2ATsz3ztKwdf2Zg8Hc"
@@ -252,8 +253,8 @@ def download_image(url: str) -> tuple[bytes, str]:
 
 
 def upload_media(oauth: OAuth1Session, image_url: str) -> str:
-    """画像URLからX APIにアップロードしてmedia_idを返す。
-    v2 chunked upload (INIT → APPEND → FINALIZE) を使用。
+    """画像URLからX v1.1 APIにアップロードしてmedia_id_stringを返す。
+    v1.1 chunked upload (INIT → APPEND → FINALIZE)。
     """
     # 1. 画像ダウンロード
     image_data, content_type = download_image(image_url)
@@ -269,6 +270,16 @@ def upload_media(oauth: OAuth1Session, image_url: str) -> str:
     }
     media_type = mime_map.get(content_type, "image/jpeg")
 
+    # 5MB未満はシンプルアップロード
+    if total_bytes < 5 * 1024 * 1024:
+        files = {"media_data": (None, __import__("base64").b64encode(image_data).decode())}
+        resp = oauth.post(X_MEDIA_URL, data=files)
+        if resp.status_code not in (200, 201, 202):
+            raise RuntimeError(f"Media simple upload failed ({resp.status_code}): {resp.text}")
+        result = resp.json()
+        return result.get("media_id_string", str(result.get("media_id", "")))
+
+    # 5MB以上はチャンクアップロード
     # 2. INIT
     init_data = {
         "command": "INIT",
@@ -277,16 +288,17 @@ def upload_media(oauth: OAuth1Session, image_url: str) -> str:
         "media_category": "tweet_image",
     }
     resp = oauth.post(X_MEDIA_URL, data=init_data)
-    if resp.status_code != 200 and resp.status_code != 202:
+    if resp.status_code not in (200, 201, 202):
         raise RuntimeError(f"Media INIT failed ({resp.status_code}): {resp.text}")
-    media_id = resp.json()["id"]
+    result = resp.json()
+    media_id = result.get("media_id_string", str(result.get("media_id", "")))
 
     # 3. APPEND（チャンク分割）
     segment_index = 0
     offset = 0
     while offset < total_bytes:
         chunk = image_data[offset:offset + MEDIA_CHUNK_SIZE]
-        files = {"media": ("chunk", chunk, "application/octet-stream")}
+        files = {"media_data": ("chunk", chunk, "application/octet-stream")}
         append_data = {
             "command": "APPEND",
             "media_id": media_id,
@@ -321,7 +333,7 @@ def upload_media(oauth: OAuth1Session, image_url: str) -> str:
         result = status_resp.json()
         processing = result.get("processing_info")
         poll_count += 1
-        if poll_count > 30:  # 最大150秒
+        if poll_count > 30:
             raise RuntimeError(f"Media processing timeout: {media_id}")
 
     return media_id
