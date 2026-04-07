@@ -1,0 +1,59 @@
+# 15分ごとにスプレッドシートをチェックし、投稿時間が来た投稿を自動でXに投稿。
+# MacBookがオフでもGitHub Actionsで自動実行される。
+#
+# Instagram/Threads自動投稿と同アーキテクチャ。
+# X API v2 (api.x.com) を使用。
+name: Auto Post X
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_post:
+        description: '強制投稿する投稿番号（X-001形式）'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  auto-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: x-auto-post
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client requests requests-oauthlib
+
+      - name: Run X auto-poster
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+          X_SPREADSHEET_ID: ${{ secrets.X_SPREADSHEET_ID }}
+          FORCE_POST_NUM: ${{ inputs.force_post }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          FORCE_ARG=""
+          if [ -n "${FORCE_POST_NUM}" ]; then
+            FORCE_ARG="--force ${FORCE_POST_NUM}"
+          fi
+          python cloud_auto_post_x.py --window 45 ${FORCE_ARG}
+        shell: bash

@@ -1,0 +1,55 @@
+# 15分ごとにスプレッドシートをチェックし、投稿時間が来た投稿を自動でTikTokに投稿。
+# TikTok Content Posting API v2 (open.tiktokapis.com) を使用。
+name: Auto Post TikTok
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      force_post:
+        description: '強制投稿する投稿番号（TT-001形式）'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  auto-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: tiktok-auto-post
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client requests
+
+      - name: Run TikTok auto-poster
+        env:
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          TIKTOK_TOKEN_JSON: ${{ secrets.TIKTOK_TOKEN_JSON }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_SPREADSHEET_ID: ${{ secrets.TIKTOK_SPREADSHEET_ID }}
+          FORCE_POST_NUM: ${{ inputs.force_post }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          FORCE_ARG=""
+          if [ -n "${FORCE_POST_NUM}" ]; then
+            FORCE_ARG="--force ${FORCE_POST_NUM}"
+          fi
+          python cloud_auto_post_tiktok.py --window 45 ${FORCE_ARG}
+        shell: bash
