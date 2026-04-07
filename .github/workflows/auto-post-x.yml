@@ -1,8 +1,6 @@
-# 15分ごとにスプレッドシートをチェックし、投稿時間が来た投稿を自動でXに投稿。
-# MacBookがオフでもGitHub Actionsで自動実行される。
-#
-# Instagram/Threads自動投稿と同アーキテクチャ。
-# X API v2 (api.x.com) を使用。
+# X自動投稿 (twikit版) — 公式APIの従量課金なしで投稿
+# twikit (X内部GraphQL API) + セッションCookie認証
+# 15分ごとにスプシチェック → 投稿時間が来たらツイート
 name: Auto Post X
 
 on:
@@ -38,15 +36,12 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client requests requests-oauthlib
+        run: pip install twikit google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client httpx
 
-      - name: Run X auto-poster
+      - name: Run X auto-poster (twikit)
         env:
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
-          X_API_KEY: ${{ secrets.X_API_KEY }}
-          X_API_SECRET: ${{ secrets.X_API_SECRET }}
-          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
-          X_ACCESS_TOKEN_SECRET: ${{ secrets.X_ACCESS_TOKEN_SECRET }}
+          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
           X_SPREADSHEET_ID: ${{ secrets.X_SPREADSHEET_ID }}
           FORCE_POST_NUM: ${{ inputs.force_post }}
           PYTHONUNBUFFERED: '1'
