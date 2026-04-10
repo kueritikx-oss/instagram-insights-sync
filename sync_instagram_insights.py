@@ -71,60 +71,55 @@ COL_URL = 7    # H: 投稿URL
 
 # ---------- 1日後ブロック ----------
 METRIC_TO_COL_1DAY = {
-    "reach": 22,               # W 全体
-    "views": 31,               # AF 再生数
-    "total_interactions": 36,  # AK 全体
-    "likes": 39,               # AN いいね
-    "saved": 40,               # AO 保存
-    "comments": 41,            # AP コメント
-    "shares": 42,              # AQ シェア
-    "profile_visits": 43,      # AR プロフアクセス
-    "follows": 44,             # AS フォロー
+    "reach": 24,               # Y: 全体
+    "views": 33,               # AH: 再生数
+    "total_interactions": 38,  # AM: 全体
+    "likes": 41,               # AP: いいね
+    "saved": 42,               # AQ: 保存
+    "comments": 43,            # AR: コメント
+    "shares": 44,              # AS: シェア
+    "profile_visits": 45,      # AT: プロフアクセス
+    "follows": 46,             # AU: フォロー
 }
 
 # ---------- 7日後ブロック ----------
 METRIC_TO_COL_7DAY = {
-    "reach": 51,               # AZ 全体
-    "views": 61,               # BJ 再生回数
-    "total_interactions": 66,  # BO 全体
-    "likes": 69,               # BR いいね
-    "saved": 70,               # BS 保存
-    "comments": 71,            # BT コメント
-    "shares": 72,              # BU シェア
-    "profile_visits": 73,      # BV プロフアクセス
-    "follows": 74,             # BW フォロー
+    "reach": 53,               # BB: 全体
+    "views": 63,               # BL: 再生回数
+    "total_interactions": 68,  # BQ: 全体
+    "likes": 71,               # BT: いいね
+    "saved": 72,               # BU: 保存
+    "comments": 73,            # BV: コメント
+    "shares": 74,              # BW: シェア
+    "profile_visits": 75,      # BX: プロフアクセス
+    "follows": 76,             # BY: フォロー
 }
 
 # ---------- 拡張メトリクス（v2.0 追加）—— col 86〜 ----------
 # 1日後 拡張
 EXT_METRIC_TO_COL_1DAY = {
-    "ig_reels_avg_watch_time": 86,          # CI: リール平均視聴時間(ms)
-    "ig_reels_video_view_total_time": 87,   # CJ: リール総再生時間(ms)
-    "reels_skip_rate": 88,                  # CK: 3秒以内スキップ率(%)
-    "reposts": 89,                          # CL: リポスト数
-    "profile_activity_bio_link": 90,        # CM: プロフ→BIOリンクタップ
+    "ig_reels_avg_watch_time": 37,          # AL: 平均再生時間
+    "ig_reels_video_view_total_time": 36,   # AK: 再生時間
 }
 
 # 7日後 拡張
 EXT_METRIC_TO_COL_7DAY = {
-    "ig_reels_avg_watch_time": 91,          # CO: リール平均視聴時間(ms)
-    "ig_reels_video_view_total_time": 92,   # CP: リール総再生時間(ms)
-    "reels_skip_rate": 93,                  # CQ: 3秒以内スキップ率(%)
-    "reposts": 94,                          # CR: リポスト数
-    "profile_activity_bio_link": 95,        # CS: プロフ→BIOリンクタップ
+    "ig_reels_avg_watch_time": 67,          # BP: 平均再生時間
+    "ig_reels_video_view_total_time": 66,   # BO: 再生時間
+    "reposts": 62,                          # BK: 再シェア
 }
 
-# メディアタイプ列
-COL_MEDIA_TYPE = 96  # CT: IMAGE / VIDEO / CAROUSEL_ALBUM
+# メディアタイプ列 — スプシに専用列なし。書き込みスキップ。
+COL_MEDIA_TYPE = None
 
 # ---------- メタデータ列（既存）----------
 JST = timezone(timedelta(hours=9))
 
-COL_1DAY_CAPTURED_AT = 81
-COL_1DAY_CAPTURE_MODE = 82
-COL_7DAY_CAPTURED_AT = 83
-COL_7DAY_CAPTURE_MODE = 84
-COL_LATEST_CAPTURED_AT = 85
+COL_1DAY_CAPTURED_AT = 83   # CF: 1日後_取得日時
+COL_1DAY_CAPTURE_MODE = 84  # CG: 1日後_取得区分
+COL_7DAY_CAPTURED_AT = 85   # CH: 1週間後_取得日時
+COL_7DAY_CAPTURE_MODE = 86  # CI: 1週間後_取得区分
+COL_LATEST_CAPTURED_AT = 87 # CJ: 最新取得日時
 
 # ---------- 経過時間しきい値 ----------
 HOURS_1DAY_MIN = 24
@@ -439,8 +434,10 @@ def parse_sheet_rows(values: List[List[Any]], start_row: int = 4) -> List[SheetR
         has_1day_metadata = has_cell_value(row, COL_1DAY_CAPTURED_AT) and has_cell_value(row, COL_1DAY_CAPTURE_MODE)
         has_7day_metadata = has_cell_value(row, COL_7DAY_CAPTURED_AT) and has_cell_value(row, COL_7DAY_CAPTURE_MODE)
         # 拡張メトリクスの完了チェック（少なくとも1つ拡張列に値があれば完了扱い）
-        has_1day_ext = has_cell_value(row, EXT_METRIC_TO_COL_1DAY.get("reposts", 89))
-        has_7day_ext = has_cell_value(row, EXT_METRIC_TO_COL_7DAY.get("reposts", 94))
+        _ext1_check_col = next(iter(EXT_METRIC_TO_COL_1DAY.values()), None)
+        has_1day_ext = has_cell_value(row, _ext1_check_col) if _ext1_check_col is not None else True
+        _ext7_check_col = next(iter(EXT_METRIC_TO_COL_7DAY.values()), None)
+        has_7day_ext = has_cell_value(row, _ext7_check_col) if _ext7_check_col is not None else True
         rows.append(SheetRow(
             row_index=row_idx,
             date_str=date_str,
@@ -896,8 +893,8 @@ def main() -> None:
 
         row = sheet_row.row_index
 
-        # メディアタイプを常に書き込む（未設定なら）
-        if not has_cell_value(values[row - 4] if (row - 4) < len(values) else [], COL_MEDIA_TYPE):
+        # メディアタイプを常に書き込む（未設定なら）— 専用列がある場合のみ
+        if COL_MEDIA_TYPE is not None and not has_cell_value(values[row - 4] if (row - 4) < len(values) else [], COL_MEDIA_TYPE):
             pending_updates.append(build_media_type_update(row, media.media_type))
 
         # 1日後ブロック

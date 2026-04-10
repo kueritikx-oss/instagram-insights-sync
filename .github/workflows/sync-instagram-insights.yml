@@ -1,12 +1,13 @@
 # 1日5回（JST 0:00, 3:00, 9:00, 15:00, 21:00）Instagram インサイトを取得しスプレッドシートに反映。
-# JST 3:00 にアカウントレベルインサイト（日次 + 月曜は週次デモグラフィック）を取得。
+# JST 3:00（= UTC 18:00）にアカウントレベルインサイト（日次 + 月曜は週次デモグラフィック）を取得。
 # 実行後に Google Token を自動で Secret に書き戻し、トークン期限切れを防止。
 # 完了後にAuto Post Instagramを連鎖トリガー（cronバックアップ）。
 name: Sync Instagram Insights
 
 on:
   schedule:
-    - cron: '0 0,3,9,15,21 * * *'
+    # JST 0:00=UTC15, 3:00=UTC18, 9:00=UTC0, 15:00=UTC6, 21:00=UTC12
+    - cron: '0 0,6,12,15,18 * * *'
   workflow_dispatch:
 
 permissions:
