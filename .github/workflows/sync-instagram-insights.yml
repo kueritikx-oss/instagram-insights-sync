@@ -96,6 +96,33 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python sync_instagram_account_insights.py --weekly
 
+      # ====== GA4 日次PV同期（JST 3:00 = UTC 18:00 のみ、account syncと同時）======
+      - name: Write GA4 token and config
+        if: success() && steps.check_account.outputs.run_account == 'true'
+        env:
+          GA4_TOKEN_JSON: ${{ secrets.GA4_TOKEN_JSON }}
+          GA4_CONFIG_JSON: ${{ secrets.GA4_CONFIG_JSON }}
+        run: |
+          if [ -z "$GA4_TOKEN_JSON" ] || [ -z "$GA4_CONFIG_JSON" ]; then
+            echo "⚠️ GA4 secrets未設定。スキップ。"
+          else
+            printf '%s' "$GA4_TOKEN_JSON" > auth/ga4_token.json
+            printf '%s' "$GA4_CONFIG_JSON" > auth/ga4_config.json
+            echo "✅ GA4 auth files written"
+          fi
+
+      - name: Run GA4 daily PV sync
+        if: success() && steps.check_account.outputs.run_account == 'true'
+        env:
+          GA4_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          PYTHONUNBUFFERED: '1'
+        run: |
+          if [ -f auth/ga4_token.json ] && [ -f auth/ga4_config.json ]; then
+            python sync_ga4_daily.py --days 2
+          else
+            echo "⚠️ GA4 auth未設定。スキップ。"
+          fi
+
       # ====== 後処理 ======
       - name: Auto-save refreshed Google Token
         if: always()
