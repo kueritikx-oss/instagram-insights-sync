@@ -9,6 +9,12 @@ on:
     # JST 0:00=UTC15, 3:00=UTC18, 9:00=UTC0, 15:00=UTC6, 21:00=UTC12
     - cron: '0 0,6,12,15,18 * * *'
   workflow_dispatch:
+    inputs:
+      backfill_days:
+        description: '日ごとデータE/F/G欠損を直近N日分バックフィル(0=無効)'
+        required: false
+        default: '14'
+        type: string
 
 permissions:
   contents: read
@@ -84,8 +90,15 @@ jobs:
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
+          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days || '14' }}
           PYTHONUNBUFFERED: '1'
-        run: python sync_instagram_account_insights.py
+        # --backfill-days を常に有効にして、欠損があれば毎日自動補完
+        run: |
+          # 数値のみ許可（コマンドインジェクション対策）
+          if ! [[ "$BACKFILL_DAYS" =~ ^[0-9]+$ ]]; then
+            BACKFILL_DAYS=14
+          fi
+          python sync_instagram_account_insights.py --backfill-days "$BACKFILL_DAYS"
 
       - name: Run account weekly demographics (Monday only)
         if: success() && steps.check_account.outputs.run_weekly == 'true'
@@ -147,8 +160,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: gh workflow run auto-post-instagram.yml --repo kueritikx-oss/instagram-insights-sync 2>/dev/null || echo "⚠️ Auto Post trigger skipped"
 
-      - name: Alert on failure
+      # ====== Healthchecks.io Dead-man's switch ======
+      - name: Healthcheck ping (success)
+        if: success()
+        env:
+          HC_UUID: ${{ secrets.HC_SYNC_INSIGHTS_UUID }}
+        run: |
+          if [ -n "$HC_UUID" ]; then
+            curl -fsS -m 10 --retry 3 -o /dev/null "https://hc-ping.com/$HC_UUID"
+          else
+            echo "HC_SYNC_INSIGHTS_UUID 未設定 → ping スキップ"
+          fi
+
+      - name: Healthcheck ping (failure)
+        if: failure()
+        env:
+          HC_UUID: ${{ secrets.HC_SYNC_INSIGHTS_UUID }}
+        run: |
+          if [ -n "$HC_UUID" ]; then
+            curl -fsS -m 10 --retry 3 -o /dev/null "https://hc-ping.com/$HC_UUID/fail" || true
+          fi
+
+      - name: Alert on failure (Discord + Issue + Healthcheck)
         if: failure()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          HEALTHCHECK_UUID: ${{ secrets.HC_SYNC_INSIGHTS_UUID }}
         run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py

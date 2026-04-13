@@ -331,12 +331,12 @@ def write_pv_to_sheet(
     sheets_service,
     target_date: datetime,
     data: Dict[str, Any],
-) -> None:
-    """PVデータをスプシに書き込み"""
+) -> bool:
+    """PVデータをスプシに書き込み。行が見つからなければFalseを返す(append禁止)。"""
     row_num = find_row_by_date(sheets_service, target_date)
     if not row_num:
-        print(f"  {data['date']}: 行が見つかりません。スキップ。")
-        return
+        print(f"  ⚠️ {data['date']}: 行が見つかりません — A列の日付生成が必要", file=sys.stderr)
+        return False
 
     updates = []
 
@@ -358,6 +358,7 @@ def write_pv_to_sheet(
     print(f"  {data['date']}: PV={data['total_pv']} (IG:{data['ig_pv']} TikTok:{data['tiktok_pv']} "
           f"Direct:{data['direct_pv']} Ref:{data['referral_pv']}) "
           f"LP:{data['lp_pv']} 会員:{data['member_pv']} → Row {row_num}")
+    return True
 
 
 def main():
@@ -413,6 +414,7 @@ def main():
 
     print(f"取得期間: {len(dates)}日分\n")
 
+    write_failed = 0
     for dt in dates:
         # 日付で旧/新プロパティを自動選択
         dt_naive = dt.replace(tzinfo=None) if dt.tzinfo else dt
@@ -426,11 +428,17 @@ def main():
                 print(f"  [{prop_label}] {data['date']}: PV={data['total_pv']} UU={data['total_users']} "
                       f"(IG:{data['ig_pv']} Direct:{data['direct_pv']} Ref:{data['referral_pv']})")
             else:
-                write_pv_to_sheet(sheets_service, dt, data)
+                if not write_pv_to_sheet(sheets_service, dt, data):
+                    write_failed += 1
         except Exception as e:
-            print(f"  {dt.strftime('%Y-%m-%d')}: エラー: {e}")
+            print(f"  {dt.strftime('%Y-%m-%d')}: エラー: {e}", file=sys.stderr)
+            write_failed += 1
 
     print("\n完了")
+
+    if write_failed > 0:
+        print(f"🔴 警告: GA4書き込み失敗 {write_failed} 件。A列日付生成またはAPIエラーの可能性。", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

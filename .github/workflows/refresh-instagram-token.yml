@@ -39,8 +39,10 @@ jobs:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: python scripts/refresh_instagram_token.py
 
-      - name: Alert on failure
+      - name: Alert on failure (Discord + Issue)
         if: failure()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
-        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          HEALTHCHECK_UUID: ${{ secrets.HC_REFRESH_TOKEN_UUID }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py

@@ -531,19 +531,13 @@ def collect_daily_data(
 # ========== 既存シートへの書き込み ==========
 
 def write_to_daily_sheet(sheets_service, target_date: datetime, data: Dict[str, Any]) -> bool:
-    """日ごとデータシートの該当行にフォロー増減を書き込む"""
+    """日ごとデータシートの該当行にフォロー増減を書き込む。
+    行が見つからない場合は警告してFalseを返す(append禁止でゴミデータ防止)。"""
     row = find_row_by_date(sheets_service, DAILY_SHEET_ID, DAILY_TAB_NAME, target_date)
     if not row:
-        # 行が見つからない場合は新規行を追加
-        new_date_str = format_daily_date(target_date)
-        new_row = [""] * 7
-        new_row[0] = new_date_str
-        new_row[DAILY_COL_FOLLOW_NET] = data["follows_net"]
-        new_row[DAILY_COL_FOLLOW_UP] = data["follows"]
-        new_row[DAILY_COL_FOLLOW_DOWN] = data["unfollows"]
-        append_row(sheets_service, DAILY_SHEET_ID, DAILY_TAB_NAME, new_row)
-        print(f"    → 日ごとデータ: 新規行追加 ({new_date_str})")
-        return True
+        date_str = format_daily_date(target_date)
+        print(f"    ⚠️ 日ごとデータ: 行が見つかりません ({date_str}) — A列の日付生成が必要", file=sys.stderr)
+        return False
 
     updates = [
         (DAILY_COL_FOLLOW_NET, data["follows_net"]),
@@ -553,6 +547,34 @@ def write_to_daily_sheet(sheets_service, target_date: datetime, data: Dict[str, 
     update_cells(sheets_service, DAILY_SHEET_ID, DAILY_TAB_NAME, row, updates)
     print(f"    → 日ごとデータ Row {row}: 更新（+{data['follows']}/-{data['unfollows']}={data['follows_net']:+d}）")
     return True
+
+
+def detect_missing_daily_dates(sheets_service, days: int) -> List[datetime]:
+    """日ごとデータの直近days日で、E/F/G列が全て空の日を検出して返す（欠損バックフィル用）"""
+    now_jst = datetime.now(JST)
+    yesterday = (now_jst - timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0, tzinfo=None
+    )
+    missing: List[datetime] = []
+    for offset in range(days):
+        target = yesterday - timedelta(days=offset)
+        row = find_row_by_date(sheets_service, DAILY_SHEET_ID, DAILY_TAB_NAME, target)
+        if not row:
+            continue  # A列に日付なし(別課題)。無理に埋めない
+        rng = f"'{DAILY_TAB_NAME}'!E{row}:G{row}"
+        try:
+            resp = sheets_service.spreadsheets().values().get(
+                spreadsheetId=DAILY_SHEET_ID, range=rng,
+            ).execute()
+        except Exception as exc:
+            print(f"    ⚠️ 欠損チェック失敗 {target.strftime('%Y-%m-%d')}: {exc}", file=sys.stderr)
+            continue
+        values = resp.get("values", [])
+        cells = values[0] if values else []
+        is_empty = len(cells) < 3 or all(not (c and str(c).strip()) for c in cells)
+        if is_empty:
+            missing.append(target)
+    return missing
 
 
 def write_to_weekly_sheet(
@@ -648,6 +670,8 @@ def main() -> None:
     parser.add_argument("--weekly", action="store_true", help="週次デモグラフィックも取得")
     parser.add_argument("--date", type=str, help="対象日 (YYYY-MM-DD)")
     parser.add_argument("--days", type=int, default=1, help="過去N日分を取得")
+    parser.add_argument("--backfill-days", type=int, default=0,
+                        help="日ごとデータ直近N日を走査してE/F/G列欠損日を自動バックフィル")
     args = parser.parse_args()
 
     print("=== Instagram アカウントインサイト v2.0（既存シート連携）===\n")
@@ -688,6 +712,7 @@ def main() -> None:
     daily_results: List[Dict[str, Any]] = []
     written = 0
     skipped = 0
+    daily_write_failed = 0  # 日ごとデータ書き込み失敗数
 
     for i in range(args.days):
         target = target_base - timedelta(days=i)
@@ -702,11 +727,35 @@ def main() -> None:
         daily_results.append(data)
 
         # 1. 日ごとデータ（既存）に書き込み
-        write_to_daily_sheet(sheets_service, target, data)
+        if not write_to_daily_sheet(sheets_service, target, data):
+            daily_write_failed += 1
 
         # 2. 詳細日次タブに書き込み
         write_to_detail_daily(sheets_service, data)
         written += 1
+
+    # ---- バックフィル（欠損自動検知→再取得）----
+    backfilled = 0
+    if args.backfill_days > 0:
+        print(f"\n--- バックフィル: 直近{args.backfill_days}日の欠損検知 ---")
+        missing_dates = detect_missing_daily_dates(sheets_service, args.backfill_days)
+        if not missing_dates:
+            print("  ✅ 欠損なし")
+        else:
+            print(f"  欠損検出: {len(missing_dates)}日")
+            for target in missing_dates:
+                date_str = target.strftime("%Y-%m-%d")
+                print(f"  バックフィル中: {date_str}")
+                try:
+                    data = collect_daily_data(access_token, ig_user_id, target)
+                    if write_to_daily_sheet(sheets_service, target, data):
+                        backfilled += 1
+                    else:
+                        daily_write_failed += 1
+                except Exception as exc:
+                    print(f"    ⚠️ {date_str} 失敗: {exc}", file=sys.stderr)
+                    daily_write_failed += 1
+            print(f"  完了: {backfilled}日補完")
 
     # ---- 週次集計（7日分以上あれば）----
     if daily_results and args.days >= 7:
@@ -779,7 +828,7 @@ def main() -> None:
 
     # サマリー
     print(f"\n{'=' * 50}")
-    print(f"完了: 日次 {written} 日書き込み（{skipped} 日スキップ）")
+    print(f"完了: 日次 {written} 日書き込み（{skipped} 日スキップ, バックフィル {backfilled} 日補完）")
     print(f"書き込み先:")
     print(f"  ✅ 日ごとデータ — フォロー増減（E-G列）")
     print(f"  ✅ 詳細日次 — 全33指標（IG_account_daily_2026）")
@@ -787,6 +836,13 @@ def main() -> None:
         print(f"  ✅ 週ごとInstagramデータ — リーチ内外・フォロー・タップ（S-AF列）")
     if args.weekly:
         print(f"  ✅ 詳細週次 — デモグラフィック（IG_account_weekly_2026）")
+
+    # 異常検知: 日ごとデータ書き込み失敗が1件以上あれば exit 2
+    # ワークフロー側で if: failure() を発動してDiscord通知させるため
+    if daily_write_failed > 0:
+        print(f"\n🔴 警告: 日ごとデータ書き込み失敗 {daily_write_failed} 件。", file=sys.stderr)
+        print(f"     A列の日付生成漏れ、または構造変更の可能性あり。", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

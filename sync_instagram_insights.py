@@ -36,13 +36,13 @@ from googleapiclient.discovery import build
 
 # ========== パス・スプレッドシート ==========
 DEFAULT_BASE_DIR = Path(
-    "/Users/taiki/Library/Mobile Documents/com~apple~CloudDocs/MacDocuments/01_仕事"
+    "/Users/taiki/Projects/事業"
 )
 BASE_DIR = Path(os.environ.get("INSTAGRAM_INSIGHTS_BASE_DIR", str(DEFAULT_BASE_DIR))).expanduser()
 GOOGLE_AUTH_DIR = Path(
     os.environ.get(
         "INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR",
-        str((BASE_DIR / "事業 Cursor/タッキー/02_SNS集客/instagram-auto-post").resolve()),
+        str((BASE_DIR / "タッキー/02_SNS集客/instagram-auto-post").resolve()),
     )
 ).expanduser()
 CREDS_FILE = GOOGLE_AUTH_DIR / "credentials.json"
