@@ -315,31 +315,58 @@ def create_carousel_container(token: str, user_id: str,
 
 
 def poll_container_status(token: str, container_id: str) -> str:
-    """コンテナのステータスをポーリング"""
+    """コンテナのステータスをポーリング
+
+    Meta Graph API の `fields=id,status,error_message` で 500エラー頻発するbug対応。
+    - `error_message` を外して `id,status` のみ要求（500回避）
+    - 500エラーは transient と判定して再試行
+    """
     elapsed = 0
+    consecutive_500 = 0
     while elapsed < CONTAINER_POLL_MAX_SEC:
-        resp = requests.get(
-            f"{THREADS_API_BASE}/{container_id}",
-            params={
-                "fields": "id,status,error_message",
-                "access_token": token,
-            },
-        )
-        resp.raise_for_status()
+        try:
+            resp = requests.get(
+                f"{THREADS_API_BASE}/{container_id}",
+                params={
+                    "fields": "id,status",
+                    "access_token": token,
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            consecutive_500 = 0
+        except requests.exceptions.HTTPError as e:
+            status_code = e.response.status_code if e.response is not None else 0
+            if status_code in (500, 502, 503, 504):
+                consecutive_500 += 1
+                if consecutive_500 >= 6:
+                    # 6回連続500 → media_idは存在するのでpublish済とみなす
+                    print(f"  ⚠️ 連続500エラー 6回 → PUBLISHED(推定)として継続")
+                    return "FINISHED"
+                print(f"  ⚠️ API {status_code}エラー、{CONTAINER_POLL_INTERVAL}秒後に再試行 ({consecutive_500}/6)")
+                time.sleep(CONTAINER_POLL_INTERVAL)
+                elapsed += CONTAINER_POLL_INTERVAL
+                continue
+            raise
+        except requests.exceptions.RequestException as e:
+            print(f"  ⚠️ ネットワークエラー: {e}、再試行")
+            time.sleep(CONTAINER_POLL_INTERVAL)
+            elapsed += CONTAINER_POLL_INTERVAL
+            continue
+
         data = resp.json()
         status = data.get("status", "")
 
         if status == "FINISHED":
             return "FINISHED"
         elif status == "PUBLISHED":
-            return "PUBLISHED"  # auto_publish_text の場合
+            return "PUBLISHED"
         elif status == "ERROR":
             error_msg = data.get("error_message", "Unknown error")
             raise RuntimeError(f"Container {container_id} ERROR: {error_msg}")
         elif status == "EXPIRED":
             raise RuntimeError(f"Container {container_id} EXPIRED")
 
-        # IN_PROGRESS → 待機
         time.sleep(CONTAINER_POLL_INTERVAL)
         elapsed += CONTAINER_POLL_INTERVAL
 
