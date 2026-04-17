@@ -51,13 +51,13 @@ COL_TIME = 3          # D
 COL_TITLE = 4         # E
 COL_CTA = 5           # F: 投稿種別（プレースホルダ「自動」を補正する）
 COL_URL = 7           # H
-COL_CAPTION = 11      # L
-COL_STATUS = 92       # CO: 投稿ステータス
-COL_IMAGE_URLS = 93   # CP: 画像URLs (JSON array)
-COL_MEDIA_ID = 94     # CQ: メディアID
-COL_ERROR = 95        # CR: 投稿エラー
-COL_RETRY = 96        # CS: リトライ回数
-COL_LAST_ATTEMPT = 97 # CT: 最終投稿試行
+COL_CAPTION = 13      # N: キャプション（実測ヘッダー）
+COL_STATUS = 94       # CQ: 投稿ステータス（実測ヘッダー）
+COL_IMAGE_URLS = 95   # CR: 画像URLs (JSON array)（実測ヘッダー）
+COL_MEDIA_ID = 96     # CS: メディアID
+COL_ERROR = 97        # CT: 投稿エラー
+COL_RETRY = 98        # CU: リトライ回数
+COL_LAST_ATTEMPT = 99 # CV: 最終投稿試行
 
 MAX_RETRIES = 3
 MAX_TRANSIENT_RETRIES = 12  # transientエラーは次のcronサイクルで再試行（15分×12=3時間猶予）
