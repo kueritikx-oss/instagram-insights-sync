@@ -886,6 +886,22 @@ def main() -> None:
                      needs_7day_metadata, needs_1day_ext, needs_7day_ext]):
             continue
 
+        wants_1day = needs_1day_metrics or needs_1day_metadata or needs_1day_ext
+        wants_7day = needs_7day_metrics or needs_7day_metadata or needs_7day_ext
+        capture_mode_1day = capture_mode_for_snapshot("1day", hours) if wants_1day else None
+        capture_mode_7day = capture_mode_for_snapshot("7day", hours) if wants_7day else None
+        should_write_1day = wants_1day and capture_mode_1day == "scheduled"
+        should_write_7day = wants_7day and capture_mode_7day == "scheduled"
+
+        # Meta API returns cumulative lifetime insights, not historical point-in-time data.
+        # Writing late backfills into canonical 1day/7day columns makes both snapshots equal.
+        if not (should_write_1day or should_write_7day):
+            if wants_1day:
+                print(f"  行 {sheet_row.row_index}: 1日後 backfill をスキップ (Main/Raw 書き込みなし)")
+            if wants_7day:
+                print(f"  行 {sheet_row.row_index}: 1週間後 backfill をスキップ (Main/Raw 書き込みなし)")
+            continue
+
         # インサイト取得（v2.0: media_type を渡して Reels 判定）
         insights = fetch_insights(access_token, media.media_id, media.media_type)
         if not insights:
@@ -897,10 +913,10 @@ def main() -> None:
         if COL_MEDIA_TYPE is not None and not has_cell_value(values[row - 4] if (row - 4) < len(values) else [], COL_MEDIA_TYPE):
             pending_updates.append(build_media_type_update(row, media.media_type))
 
-        # 1日後ブロック
-        if needs_1day_metrics or needs_1day_metadata or needs_1day_ext:
+        # 1日後ブロック: scheduled のみ Main/Raw に記録する。
+        if should_write_1day:
             captured_at = datetime.now(timezone.utc).isoformat()
-            capture_mode = capture_mode_for_snapshot("1day", hours)
+            capture_mode = capture_mode_1day or "scheduled"
             if needs_1day_metrics:
                 pending_updates.extend(build_metric_updates(row, insights, METRIC_TO_COL_1DAY))
             if needs_1day_ext:
@@ -930,10 +946,10 @@ def main() -> None:
                 repaired_1day_metadata += 1
                 print(f"  行 {row}: 1日後メタデータを補完 [{capture_mode}]")
 
-        # 1週間後ブロック
-        if needs_7day_metrics or needs_7day_metadata or needs_7day_ext:
+        # 1週間後ブロック: scheduled のみ Main/Raw に記録する。
+        if should_write_7day:
             captured_at = datetime.now(timezone.utc).isoformat()
-            capture_mode = capture_mode_for_snapshot("7day", hours)
+            capture_mode = capture_mode_7day or "scheduled"
             if needs_7day_metrics:
                 pending_updates.extend(build_metric_updates(row, insights, METRIC_TO_COL_7DAY))
             if needs_7day_ext:
