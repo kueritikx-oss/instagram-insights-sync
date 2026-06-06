@@ -3,8 +3,8 @@
 #
 # 前提:
 #   - 画像は事前にimgbbにアップロード済み（prepare_cloud_post.py でローカル実行）
-#   - スプレッドシートのCP列に画像URL、CO列にステータス "ready" が入っている
-#   - L列にキャプション、A列に日付、D列に時刻が入っている
+#   - スプレッドシートのCR列に画像URL、CQ列にステータス "ready" が入っている
+#   - N列にキャプション、A列に日付、D列に時刻が入っている
 #
 # 設計: Buffer/Later/Hootsuite と同等レベル
 #   - Content Publishing Limit 事前チェック（Meta API準拠）

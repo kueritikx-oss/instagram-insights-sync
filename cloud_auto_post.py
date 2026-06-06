@@ -30,6 +30,12 @@ _UTILS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _UTILS_DIR not in sys.path:
     sys.path.insert(0, _UTILS_DIR)
 from instagram_sheet_metadata import build_metadata_fixes  # noqa: E402
+
+# ルート utils/ を sys.path に追加 (sheet_column_map / discord_notify 共通)
+_ROOT_UTILS = os.path.expanduser("~/Projects/事業/utils")
+if os.path.isdir(_ROOT_UTILS) and _ROOT_UTILS not in sys.path:
+    sys.path.insert(0, _ROOT_UTILS)
+
 from datetime import date, datetime, timedelta, timezone
 
 import requests
@@ -44,20 +50,26 @@ GRAPH_API_BASE = f"https://graph.facebook.com/{GRAPH_API_VERSION}"
 SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 SHEET_NAME = "Instagram投稿毎データ"
 
-# Column indices (0-based)
+# Column indices (0-based) - ヘッダー自動検出で起動時に上書きする
+# ここは fallback(最後の既知値)。load_column_map 成功時は上書きされる。
+# 2026-04-10 事故: ハードコード値(COL_STATUS=92)が2列ズレて「Posts today: 0/3」を吐いていた
+# 2026-04-20 対応: sheet_column_map.py で起動時にヘッダー検索→値を補正+assert
 COL_DATE = 0          # A
 COL_POST_NUM = 2      # C
 COL_TIME = 3          # D
 COL_TITLE = 4         # E
 COL_CTA = 5           # F: 投稿種別（プレースホルダ「自動」を補正する）
 COL_URL = 7           # H
-COL_CAPTION = 13      # N: キャプション（実測ヘッダー）
-COL_STATUS = 94       # CQ: 投稿ステータス（実測ヘッダー）
-COL_IMAGE_URLS = 95   # CR: 画像URLs (JSON array)（実測ヘッダー）
+COL_CAPTION = 13      # N (実測)
+COL_STATUS = 94       # CQ: 投稿ステータス(実測ヘッダー)
+COL_IMAGE_URLS = 95   # CR: 画像URLs (JSON array)
 COL_MEDIA_ID = 96     # CS: メディアID
 COL_ERROR = 97        # CT: 投稿エラー
 COL_RETRY = 98        # CU: リトライ回数
 COL_LAST_ATTEMPT = 99 # CV: 最終投稿試行
+
+# load_column_map 成功後にヘッダーから上書きされるフラグ
+_COL_MAP_LOADED = False
 
 MAX_RETRIES = 3
 MAX_TRANSIENT_RETRIES = 12  # transientエラーは次のcronサイクルで再試行（15分×12=3時間猶予）
@@ -135,10 +147,145 @@ def col_letter(idx):
     return result
 
 
+def refresh_columns_from_header(service) -> dict:
+    """
+    起動時にヘッダー行を読んで COL_STATUS 等の定数を実測値で上書きする。
+
+    目的:
+      スプシ列挿入でハードコード値(例: COL_STATUS=92)がズレたまま動作→
+      「Posts today: 0/3」を延々と吐くサイレント事故を防ぐ。
+
+    Returns:
+        col_map: 検出された {内部名: 列番号(0-based)} の辞書
+
+    Raises:
+        SystemExit(2): 必須列が検出できなかった時 (Discord critical通知も送る)
+    """
+    global COL_STATUS, COL_IMAGE_URLS, COL_MEDIA_ID, COL_ERROR, COL_RETRY
+    global COL_LAST_ATTEMPT, COL_CAPTION
+    global COL_DATE, COL_POST_NUM, COL_TIME, COL_TITLE, COL_CTA, COL_URL
+    global _COL_MAP_LOADED
+
+    try:
+        from sheet_column_map import load_column_map, validate_columns
+    except ImportError as e:
+        print(f"  ⚠️ sheet_column_map.py 未検出: {e}. ハードコード値で継続", flush=True)
+        return {}
+
+    try:
+        col_map = load_column_map(service, SHEET_ID, tab_name=SHEET_NAME)
+    except Exception as e:
+        msg = f"cloud_auto_post: ヘッダー読取失敗: {e}"
+        print(f"  ⚠️ {msg}. ハードコード値で継続", flush=True)
+        try:
+            from discord_notify import warn as discord_warn
+            discord_warn("cloud_auto_post ヘッダー読取失敗", msg)
+        except Exception:
+            pass
+        return {}
+
+    # 必須列: 欠落は致命的
+    required = ["post_status", "image_urls", "media_id", "post_error",
+                "post_retry", "post_last_attempt", "caption", "date",
+                "number", "time", "filename", "post_type", "url"]
+    try:
+        validate_columns(col_map, required=required, caller="cloud_auto_post.py")
+    except ValueError as e:
+        print(f"\n🚨 {e}", flush=True)
+        try:
+            from discord_notify import critical as discord_critical
+            discord_critical(
+                "cloud_auto_post: 必須列検出失敗",
+                str(e),
+                fields={"影響": "自動投稿停止", "対応": "スプシ列挿入/削除を確認"},
+            )
+        except Exception:
+            pass
+        sys.exit(2)
+
+    # 列番号を実測値で上書き (起動時アサーション)
+    def _check(name, old_val, new_val, label):
+        if new_val != old_val:
+            print(f"  ⚡ {name}: {old_val} → {new_val} (実測ヘッダーに補正) [{label}]", flush=True)
+        return new_val
+
+    COL_STATUS = _check("COL_STATUS", COL_STATUS, col_map["post_status"], "投稿ステータス")
+    COL_IMAGE_URLS = _check("COL_IMAGE_URLS", COL_IMAGE_URLS, col_map["image_urls"], "画像URLs")
+    COL_MEDIA_ID = _check("COL_MEDIA_ID", COL_MEDIA_ID, col_map["media_id"], "メディアID")
+    COL_ERROR = _check("COL_ERROR", COL_ERROR, col_map["post_error"], "投稿エラー")
+    COL_RETRY = _check("COL_RETRY", COL_RETRY, col_map["post_retry"], "リトライ回数")
+    COL_LAST_ATTEMPT = _check("COL_LAST_ATTEMPT", COL_LAST_ATTEMPT, col_map["post_last_attempt"], "最終投稿試行")
+    COL_CAPTION = _check("COL_CAPTION", COL_CAPTION, col_map["caption"], "キャプション")
+    COL_DATE = _check("COL_DATE", COL_DATE, col_map["date"], "日付")
+    COL_POST_NUM = _check("COL_POST_NUM", COL_POST_NUM, col_map["number"], "番号")
+    COL_TIME = _check("COL_TIME", COL_TIME, col_map["time"], "時刻")
+    COL_TITLE = _check("COL_TITLE", COL_TITLE, col_map["filename"], "ファイル名")
+    COL_CTA = _check("COL_CTA", COL_CTA, col_map["post_type"], "投稿種別")
+    COL_URL = _check("COL_URL", COL_URL, col_map["url"], "URL")
+
+    _COL_MAP_LOADED = True
+    print(f"  ✅ 列マップ検証OK ({len(col_map)}列検出)", flush=True)
+    return col_map
+
+
+def _set_thumbnail_after_post(sheets_service, access_token, ig_user_id,
+                              media_id, row_num):
+    """投稿直後にB列サムネを永続URL優先で復旧する。"""
+    cr_res = sheets_service.spreadsheets().values().get(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_NAME}!{col_letter(COL_IMAGE_URLS)}{row_num}",
+    ).execute()
+    cr_vals = cr_res.get("values", [[]])[0] if cr_res.get("values") else []
+    cr_raw = cr_vals[0] if cr_vals else ""
+
+    cover_url = ""
+    if cr_raw:
+        try:
+            urls = json.loads(cr_raw)
+            if urls and isinstance(urls, list):
+                cover_url = urls[0]
+        except (json.JSONDecodeError, IndexError):
+            pass
+
+    if not cover_url:
+        try:
+            resp = requests.get(
+                f"{GRAPH_API_BASE}/{media_id}",
+                params={
+                    "fields": "media_url,thumbnail_url,children.limit(1){media_url}",
+                    "access_token": access_token,
+                },
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                children = data.get("children", {}).get("data", [])
+                if children:
+                    cover_url = children[0].get("media_url", "")
+                else:
+                    cover_url = data.get("media_url") or data.get("thumbnail_url", "")
+        except Exception:
+            pass
+
+    if not cover_url:
+        return
+
+    sheets_service.spreadsheets().values().update(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_NAME}!B{row_num}",
+        valueInputOption="USER_ENTERED",
+        body={"values": [[f'=IMAGE("{cover_url}")']]},
+    ).execute()
+    src = "GitHub永続URL" if "githubusercontent" in cover_url else "CDN(一時)"
+    print(f"  ✓ サムネB列を設定済み ({src})")
+
+
 def read_all_rows(service):
+    # 読取範囲は COL_LAST_ATTEMPT より右まで読めば OK
+    end_col = col_letter(max(COL_LAST_ATTEMPT + 3, 100))  # バッファ含めて少し広め
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A4:CT220",
+        range=f"{SHEET_NAME}!A4:{end_col}220",
     ).execute()
     return result.get("values", [])
 
@@ -657,6 +804,10 @@ def main():
     access_token, ig_user_id = get_instagram_config()
     service = get_sheets_service()
 
+    # 【2026-04-20 予防策】ヘッダー自動検出で列番号を実測に補正
+    # 目的: スプシ列挿入による COL_STATUS ズレ再発防止 (2026-04-10事故)
+    refresh_columns_from_header(service)
+
     # Read all rows
     rows = read_all_rows(service)
     print(f"Read {len(rows)} rows from sheet")
@@ -745,6 +896,13 @@ def main():
             )
             today_count += 1
             print(f"  ✓ Posted successfully! ({'reel' if is_reel else 'carousel'})")
+
+            try:
+                _set_thumbnail_after_post(
+                    service, access_token, ig_user_id, media_id, p["row_num"]
+                )
+            except Exception as thumb_err:
+                print(f"  ⚠ サムネ設定失敗（投稿自体は成功）: {thumb_err}")
 
         except Exception as e:
             error_msg = str(e)[:500]
