@@ -723,7 +723,7 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         # Skip: already posted or permanently failed
         if status == "posted" or media_id:
             continue
-        if status == "failed" and retry_count >= MAX_RETRIES:
+        if status == "failed" and retry_count >= MAX_RETRIES and not force_post_num:
             continue
 
         # Must have image URLs and caption
