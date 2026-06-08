@@ -18,7 +18,7 @@ Instagram投稿毎データ スプレッドシートの列位置を
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 
 # ========== ヘッダー行3（0-based index 2）のキーワード → 列名マッピング ==========
@@ -43,7 +43,7 @@ COLUMN_DEFINITIONS = [
     ("time",         "時刻",         None, "exact"),
     ("filename",     "ファイル名",   None, "exact"),
     ("post_type",    "投稿種別",     None, "exact"),
-    ("format",       "形式",         None, "exact"),
+    ("format",       ("形式", "投稿目的"), None, "exact"),
     ("url",          "URL",          None, "exact"),
     ("caption",      "キャプション", None, "exact"),
 
@@ -161,11 +161,12 @@ def load_column_map(
 
         # 行3から検索
         matches = []
+        keywords: Sequence[str] = keyword if isinstance(keyword, tuple) else (keyword,)
         for i in range(start, min(end, len(row3))):
             cell = str(row3[i]).strip() if i < len(row3) else ""
-            if match_mode == "exact" and cell == keyword:
+            if match_mode == "exact" and cell in keywords:
                 matches.append(i)
-            elif match_mode in ("first", "second", "last") and cell == keyword:
+            elif match_mode in ("first", "second", "last") and cell in keywords:
                 matches.append(i)
 
         if match_mode == "first" and matches:

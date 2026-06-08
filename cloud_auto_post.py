@@ -60,6 +60,7 @@ COL_TIME = 3          # D
 COL_TITLE = 4         # E
 COL_CTA = 5           # F: 投稿種別（プレースホルダ「自動」を補正する）
 COL_URL = 7           # H
+COL_CONTENT = 9       # J: 原稿/投稿本文
 COL_CAPTION = 13      # N (実測)
 COL_STATUS = 94       # CQ: 投稿ステータス(実測ヘッダー)
 COL_IMAGE_URLS = 95   # CR: 画像URLs (JSON array)
@@ -81,6 +82,24 @@ DAILY_POST_LIMIT = 3   # max posts per day (self-imposed)
 # 予定時刻を逃したあとも、最大何時間「まだ同日キャッチアップ」するか（cron 15分の取りこぼし対策）
 _DEFAULT_CATCHUP_H = 18
 # env AUTO_POST_MAX_CATCHUP_HOURS で上書き可
+
+
+def j_full_body_status(text: str) -> tuple[bool, str]:
+    """Validate J-column body before a row can be posted."""
+    body = (text or "").strip()
+    if not body:
+        return False, "J列が空"
+    if "【本文要確認" in body:
+        return False, "J列が本文要確認のまま"
+    if any(marker in body for marker in ("リポスト投稿:", "既存スライド再掲:", "【画像原稿】既存スライド再掲")):
+        return False, "J列が要約/旧リポスト文"
+    if any(marker in body for marker in ("【1】", "【2】", "1枚目", "スライド1", "Slide 1")):
+        return True, "スライド本文形式"
+    if len(body) >= 500 and body.count("\n") >= 4:
+        return True, "長文本文形式"
+    if len(body) >= 250 and body.count("\n") >= 2:
+        return True, "本文候補"
+    return False, f"J列が短すぎる({len(body)}字)"
 
 # ---------------------------------------------------------------------------
 # Auth
@@ -692,6 +711,7 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         status = row[COL_STATUS] if len(row) > COL_STATUS else ""
         image_urls_str = row[COL_IMAGE_URLS] if len(row) > COL_IMAGE_URLS else ""
         media_id = row[COL_MEDIA_ID] if len(row) > COL_MEDIA_ID else ""
+        content = row[COL_CONTENT] if len(row) > COL_CONTENT else ""
         caption = row[COL_CAPTION] if len(row) > COL_CAPTION else ""
         title_e = row[COL_TITLE] if len(row) > COL_TITLE else ""
         cta_f = row[COL_CTA] if len(row) > COL_CTA else ""
@@ -713,6 +733,10 @@ def find_due_posts(rows, window_minutes=20, force_post_num=None):
         # Must be status "ready" or "retry"
         if status not in ("ready", "retry") and not force_post_num:
             continue
+
+        j_ok, j_reason = j_full_body_status(content)
+        if not j_ok:
+            raise RuntimeError(f"#{post_num}: J列本文ガードNG — {j_reason}")
 
         # Parse schedule time（A/D がシリアル数値でも解釈）
         date_val = row[COL_DATE] if len(row) > COL_DATE else ""
@@ -842,6 +866,7 @@ def main():
         return
 
     # Post each due item
+    failed_posts = []
     for p in due:
         if today_count >= DAILY_POST_LIMIT:
             print(f"\nDaily limit ({DAILY_POST_LIMIT}) reached. Stopping.")
@@ -927,6 +952,11 @@ def main():
                 service, p["row_num"], new_status,
                 error=error_msg, retry_count=new_retry
             )
+            failed_posts.append({
+                "post_num": p["post_num"],
+                "status": new_status,
+                "error": error_msg,
+            })
 
         # Gap between posts
         if len(due) > 1:
@@ -935,6 +965,12 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"Done. {today_count} total posts today.")
+    if failed_posts:
+        print("Auto-post failures detected:")
+        for item in failed_posts:
+            print(f"  Post {item['post_num']} -> {item['status']}: {item['error'][:180]}")
+        print("Exiting with non-zero status so GitHub Actions alerts instead of showing false success.")
+        sys.exit(1)
     print(f"{'='*60}")
 
 
