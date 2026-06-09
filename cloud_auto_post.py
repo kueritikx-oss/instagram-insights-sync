@@ -353,6 +353,51 @@ def update_post_status(service, row_num, status, media_id="", error="",
     write_cells(service, updates)
 
 
+def read_row(service, row_num):
+    """Read one sheet row after status changes."""
+    end_col = col_letter(max(COL_LAST_ATTEMPT + 3, 100))
+    result = service.spreadsheets().values().get(
+        spreadsheetId=SHEET_ID,
+        range=f"{SHEET_NAME}!A{row_num}:{end_col}{row_num}",
+    ).execute()
+    rows = result.get("values", [])
+    return rows[0] if rows else []
+
+
+def claim_post_for_run(service, post):
+    """Claim a row before publishing so parallel triggers do not double-post."""
+    run_id = (
+        os.environ.get("GITHUB_RUN_ID")
+        or os.environ.get("IG_AUTO_POST_RUN_ID")
+        or f"local-{int(time.time())}-{os.getpid()}"
+    )
+    claim = f"claim:{run_id}:{post['post_num']}"
+    update_post_status(
+        service,
+        post["row_num"],
+        "posting",
+        error=claim,
+        retry_count=post["retry_count"],
+    )
+    try:
+        settle_seconds = float(os.environ.get("AUTO_POST_CLAIM_SETTLE_SECONDS", "3"))
+    except ValueError:
+        settle_seconds = 3.0
+    time.sleep(max(0.5, min(settle_seconds, 10.0)))
+
+    row = read_row(service, post["row_num"])
+    status = row[COL_STATUS] if len(row) > COL_STATUS else ""
+    media_id = row[COL_MEDIA_ID] if len(row) > COL_MEDIA_ID else ""
+    error = row[COL_ERROR] if len(row) > COL_ERROR else ""
+    if status == "posted" or media_id:
+        print(f"  ↪ Skip #{post['post_num']}: already posted while claiming")
+        return False
+    if status != "posting" or error != claim:
+        print(f"  ↪ Skip #{post['post_num']}: claim lost to another runner")
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Instagram Graph API
 # ---------------------------------------------------------------------------
@@ -902,9 +947,8 @@ def main():
             write_cells(service, bf)
             print("  ↪ E/F の自動投稿プレースホルダをフォルダ名・キャプションで補正しました")
 
-        # Mark as posting
-        update_post_status(service, p["row_num"], "posting",
-                           retry_count=p["retry_count"])
+        if not claim_post_for_run(service, p):
+            continue
 
         try:
             # Detect post type: reel (single video URL) vs carousel (JSON array of image URLs)
