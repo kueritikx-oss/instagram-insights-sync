@@ -917,7 +917,7 @@ def main():
             update_post_status(
                 service, p["row_num"], "posted",
                 media_id=media_id, url=permalink,
-                retry_count=p["retry_count"]
+                retry_count=0
             )
             today_count += 1
             print(f"  ✓ Posted successfully! ({'reel' if is_reel else 'carousel'})")
