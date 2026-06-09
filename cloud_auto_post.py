@@ -336,6 +336,21 @@ def write_cells(service, updates):
     ).execute()
 
 
+def append_step_summary(lines):
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path or not lines:
+        return
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("\n".join(lines).rstrip() + "\n")
+
+
+def summary_post_labels(posts):
+    labels = []
+    for item in posts[:5]:
+        labels.append(f"#{item['post_num']}")
+    return ", ".join(labels) if labels else "none"
+
+
 def update_post_status(service, row_num, status, media_id="", error="",
                        retry_count=0, url=""):
     """Update all auto-posting columns for a row."""
@@ -391,11 +406,11 @@ def claim_post_for_run(service, post):
     error = row[COL_ERROR] if len(row) > COL_ERROR else ""
     if status == "posted" or media_id:
         print(f"  ↪ Skip #{post['post_num']}: already posted while claiming")
-        return False
+        return False, "already posted while claiming"
     if status != "posting" or error != claim:
         print(f"  ↪ Skip #{post['post_num']}: claim lost to another runner")
-        return False
-    return True
+        return False, "claim lost to another runner"
+    return True, "claimed"
 
 
 # ---------------------------------------------------------------------------
@@ -901,12 +916,22 @@ def main():
     print(f"Posts today: {today_count}/{DAILY_POST_LIMIT}")
     if today_count >= DAILY_POST_LIMIT and not args.force:
         print("Daily post limit reached. Exiting.")
+        append_step_summary([
+            "## Instagram auto-post",
+            "- result: daily-limit",
+            f"- posts_today: {today_count}/{DAILY_POST_LIMIT}",
+        ])
         return
 
     # Find due posts
     due = find_due_posts(rows, args.window, args.force)
     if not due:
         print("No posts due. Exiting.")
+        append_step_summary([
+            "## Instagram auto-post",
+            "- result: no-due",
+            "- due_count: 0",
+        ])
         return
 
     print(f"\nFound {len(due)} post(s) due:")
@@ -917,16 +942,31 @@ def main():
 
     if args.dry_run:
         print("\n[DRY RUN] Would post the above. Exiting.")
+        append_step_summary([
+            "## Instagram auto-post",
+            "- result: dry-run",
+            f"- due_count: {len(due)}",
+            f"- due_posts: {summary_post_labels(due)}",
+        ])
         return
 
     # Check publishing limit
     remaining = check_publishing_limit(access_token, ig_user_id)
     if remaining <= 0:
         print("Instagram publishing limit reached. Exiting.")
+        append_step_summary([
+            "## Instagram auto-post",
+            "- result: daily-limit",
+            "- reason: Instagram publishing limit reached",
+            f"- due_count: {len(due)}",
+            f"- due_posts: {summary_post_labels(due)}",
+        ])
         return
 
     # Post each due item
     failed_posts = []
+    posted_posts = []
+    claim_skipped = []
     for p in due:
         if today_count >= DAILY_POST_LIMIT:
             print(f"\nDaily limit ({DAILY_POST_LIMIT}) reached. Stopping.")
@@ -947,7 +987,9 @@ def main():
             write_cells(service, bf)
             print("  ↪ E/F の自動投稿プレースホルダをフォルダ名・キャプションで補正しました")
 
-        if not claim_post_for_run(service, p):
+        claimed, claim_reason = claim_post_for_run(service, p)
+        if not claimed:
+            claim_skipped.append({"post_num": p["post_num"], "reason": claim_reason})
             continue
 
         try:
@@ -978,6 +1020,7 @@ def main():
                 media_id=media_id, url=permalink,
                 retry_count=0
             )
+            posted_posts.append(str(p["post_num"]))
             today_count += 1
             print(f"  ✓ Posted successfully! ({'reel' if is_reel else 'carousel'})")
 
@@ -1024,6 +1067,23 @@ def main():
 
     print(f"\n{'='*60}")
     print(f"Done. {today_count} total posts today.")
+    claim_summary = ", ".join(
+        f"#{item['post_num']} ({item['reason']})" for item in claim_skipped[:5]
+    ) if claim_skipped else "none"
+    failed_summary = ", ".join(
+        f"#{item['post_num']} ({item['status']})" for item in failed_posts[:5]
+    ) if failed_posts else "none"
+    append_step_summary([
+        "## Instagram auto-post",
+        f"- result: {'failure' if failed_posts else 'ok'}",
+        f"- due_count: {len(due)}",
+        f"- posted_count: {len(posted_posts)}",
+        f"- posted_posts: {', '.join(posted_posts) if posted_posts else 'none'}",
+        f"- claim_skipped_count: {len(claim_skipped)}",
+        f"- claim_skipped: {claim_summary}",
+        f"- failed_count: {len(failed_posts)}",
+        f"- failed_posts: {failed_summary}",
+    ])
     if failed_posts:
         print("Auto-post failures detected:")
         for item in failed_posts:
