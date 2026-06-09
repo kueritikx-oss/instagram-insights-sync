@@ -129,9 +129,24 @@ def get_instagram_config():
 def get_sheets_service():
     """Get Google Sheets API service."""
     from google.oauth2.credentials import Credentials
+    from google.oauth2 import service_account
     from googleapiclient.discovery import build
 
-    # Try env vars first (GitHub Actions)
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+
+    if not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+        service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+        if service_account_json:
+            info = json.loads(service_account_json)
+            if info.get("type") == "service_account":
+                creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+                return build("sheets", "v4", credentials=creds)
+        if service_account_file and os.path.exists(service_account_file):
+            creds = service_account.Credentials.from_service_account_file(service_account_file, scopes=scopes)
+            return build("sheets", "v4", credentials=creds)
+
+    # OAuth fallback (legacy GitHub Actions / local one-off)
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
     if token_json:
         info = json.loads(token_json)
@@ -149,7 +164,7 @@ def get_sheets_service():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=info.get("client_id"),
         client_secret=info.get("client_secret"),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        scopes=scopes,
     )
     return build("sheets", "v4", credentials=creds)
 

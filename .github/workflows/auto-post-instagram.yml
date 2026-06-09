@@ -54,10 +54,14 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           mkdir -p auth
           printf '%s' "$GOOGLE_CREDENTIALS_JSON" > auth/credentials.json
           printf '%s' "$GOOGLE_TOKEN_JSON" > auth/token.json
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > auth/service_account.json
+          fi
           sha256sum auth/token.json > /tmp/token_hash_before.txt
 
       - name: Install dependencies
@@ -65,6 +69,8 @@ jobs:
 
       - name: Run auto-poster
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: auth/service_account.json
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
@@ -81,6 +87,10 @@ jobs:
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
         run: |
+          if [ -s auth/service_account.json ]; then
+            echo "✅ Service Account mode. OAuth token auto-save skipped."
+            exit 0
+          fi
           if [ ! -f auth/token.json ]; then
             echo "⚠️ auth/token.json が存在しない。書き戻しスキップ。"
             exit 0
