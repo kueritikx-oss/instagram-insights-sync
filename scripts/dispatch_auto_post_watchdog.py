@@ -18,6 +18,11 @@ REPO = os.environ.get("AUTO_POST_REPO") or os.environ.get("GITHUB_REPOSITORY") o
 WORKFLOW = os.environ.get("AUTO_POST_WORKFLOW", "auto-post-instagram.yml")
 STALE_MINUTES = int(os.environ.get("AUTO_POST_STALE_MINUTES", "28"))
 FAILURE_RETRY_MINUTES = int(os.environ.get("AUTO_POST_FAILURE_RETRY_MINUTES", str(STALE_MINUTES)))
+ENABLE_DISABLED_WORKFLOW = os.environ.get("AUTO_POST_ENABLE_DISABLED_WORKFLOW", "true").lower() not in {
+    "0",
+    "false",
+    "no",
+}
 
 
 def run(cmd: list[str], timeout: int = 60) -> tuple[int, str]:
@@ -44,6 +49,41 @@ def age_minutes(value: str | None) -> float | None:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60
 
 
+def sanitize(text: str) -> str:
+    return text.replace("\n", " / ").strip()[:500]
+
+
+def workflow_api_path(suffix: str = "") -> str:
+    return f"repos/{REPO}/actions/workflows/{WORKFLOW}{suffix}"
+
+
+def ensure_workflow_enabled() -> int:
+    code, out = run(["gh", "api", workflow_api_path()], timeout=60)
+    if code != 0:
+        print(f"workflow state check failed: {sanitize(out)}", file=sys.stderr)
+        return code
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError as exc:
+        print(f"invalid workflow state JSON: {exc}", file=sys.stderr)
+        return 1
+
+    state = str(data.get("state") or "unknown")
+    print(f"auto-post workflow state={state}")
+    if not state.startswith("disabled"):
+        return 0
+    if not ENABLE_DISABLED_WORKFLOW:
+        print("workflow is disabled and auto-enable is disabled", file=sys.stderr)
+        return 1
+
+    enable_code, enable_out = run(["gh", "api", "-X", "PUT", workflow_api_path("/enable")], timeout=60)
+    if enable_code != 0:
+        print(f"workflow enable failed: {sanitize(enable_out)}", file=sys.stderr)
+        return enable_code
+    print(f"workflow was {state}; enabled")
+    return 0
+
+
 def dispatch(reason: str) -> int:
     print(f"dispatching {WORKFLOW}: {reason}")
     code, out = run(["gh", "workflow", "run", WORKFLOW, "--repo", REPO], timeout=60)
@@ -52,6 +92,10 @@ def dispatch(reason: str) -> int:
 
 
 def main() -> int:
+    enable_code = ensure_workflow_enabled()
+    if enable_code != 0:
+        return enable_code
+
     code, out = run(
         [
             "gh",
