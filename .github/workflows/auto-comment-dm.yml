@@ -81,3 +81,31 @@ jobs:
           else
             echo "✅ Google Token unchanged"
           fi
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
+
+  ig-auto-post-backstop:
+    if: always()
+    needs: comment-dm
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - name: Dispatch Instagram auto-post if stale
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          AUTO_POST_REPO: ${{ github.repository }}
+          AUTO_POST_WORKFLOW: auto-post-instagram.yml
+          AUTO_POST_STALE_MINUTES: '28'
+          AUTO_POST_FAILURE_RETRY_MINUTES: '28'
+        run: python3 scripts/dispatch_auto_post_watchdog.py
