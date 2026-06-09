@@ -18,8 +18,9 @@ name: Auto Post Instagram
 on:
   schedule:
     # 15分ごとに実行（24h稼働、投稿なければ15秒で終了）
-    # GitHub Actionsのcronは±20分の誤差があるため、ウィンドウ方式で吸収
-    - cron: '*/15 * * * *'
+    # GitHub Actionsの混雑しやすい 0/15/30/45 分を避け、7分ずらして取りこぼしを減らす。
+    # cron遅延は --window 45 とローカル rescue LaunchAgent で二重に吸収。
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
       force_post:
