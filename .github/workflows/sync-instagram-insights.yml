@@ -17,6 +17,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: read
 
 env:
@@ -157,7 +158,7 @@ jobs:
       - name: Trigger Auto Post check (redundant safety net)
         if: success()
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
         run: gh workflow run auto-post-instagram.yml --repo kueritikx-oss/instagram-insights-sync 2>/dev/null || echo "⚠️ Auto Post trigger skipped"
 
       # ====== Healthchecks.io Dead-man's switch ======

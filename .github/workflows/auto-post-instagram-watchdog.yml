@@ -1,0 +1,44 @@
+# GitHub側の副系。通常投稿workflowが古くなった時だけworkflow_dispatchで叩く。
+# 投稿そのものは auto-post-instagram.yml に集約し、冪等性と日次上限を一箇所で守る。
+name: Auto Post Instagram Watchdog
+
+on:
+  schedule:
+    # 本体cron(7,22,37,52分)の少し後。1回欠けたら次の番人でdispatchする。
+    - cron: '14,29,44,59 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: instagram-auto-post-watchdog
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Dispatch auto-post if stale
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          AUTO_POST_REPO: ${{ github.repository }}
+          AUTO_POST_WORKFLOW: auto-post-instagram.yml
+          AUTO_POST_STALE_MINUTES: '28'
+          AUTO_POST_FAILURE_RETRY_MINUTES: '28'
+        run: python scripts/dispatch_auto_post_watchdog.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          HEALTHCHECK_UUID: ${{ secrets.HC_AUTO_POST_WATCHDOG_UUID }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
