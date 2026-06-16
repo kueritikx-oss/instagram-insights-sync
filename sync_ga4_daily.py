@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build as build_service
@@ -72,6 +73,15 @@ JST = timezone(timedelta(hours=9))
 
 def get_ga4_credentials() -> Credentials:
     """GA4用OAuth認証"""
+    service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if service_account_json and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        info = json.loads(service_account_json)
+        if info.get("type") == "service_account":
+            return service_account.Credentials.from_service_account_info(info, scopes=GA4_SCOPES)
+    if service_account_file and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        return service_account.Credentials.from_service_account_file(service_account_file, scopes=GA4_SCOPES)
+
     creds = None
     if GA4_TOKEN_FILE.exists():
         creds = Credentials.from_authorized_user_file(str(GA4_TOKEN_FILE), GA4_SCOPES)
