@@ -1,13 +1,14 @@
 name: Cloud Sentinel
 
-# Macが閉じていても動く"外出時の見張り番"。
-# 役割: トークン期限とクラウド自動化の生存確認だけ。データ書き込みは一切しない。
-# 異常時: このworkflow自体をfailさせ(GitHubメール通知)、ntfyでiPhoneへもプッシュする。
+# Macが閉じていても・どのアプリが起動してなくても動く"外出時の朝夜の番人"。
+# 役割: トークン期限とクラウド自動化の生存確認。データ書き込みは一切しない(read-only + ntfy)。
+# 毎朝08:00 JST / 毎夜20:00 JST に、成功時も「✅要点」、異常時は「🚨」をntfyでスマホへ送る。
+# 異常時はworkflow自体もfailさせGitHubメール通知も飛ばす。
 
 on:
   schedule:
-    - cron: "0 23 * * *" # 08:00 JST
-    - cron: "0 11 * * *" # 20:00 JST
+    - cron: "0 23 * * *" # 08:00 JST = 朝の番人
+    - cron: "0 11 * * *" # 20:00 JST = 夜の番人
   workflow_dispatch:
     inputs:
       simulate_failure:
@@ -67,14 +68,14 @@ jobs:
               exp = data.get("expires_at") or 0
               if exp:
                   days = (exp - now) / 86400
-                  notes.append(f"IG token残 {days:.0f}日")
+                  notes.append(f"IG token残{days:.0f}日")
                   if days < 10:
                       problems.append(f"IGトークン残{days:.0f}日 — Refresh Instagram Token workflowを確認")
               dae = data.get("data_access_expires_at") or 0
               if dae:
                   days = (dae - now) / 86400
                   d = datetime.datetime.fromtimestamp(dae, datetime.timezone.utc).date()
-                  notes.append(f"IG data access残 {days:.0f}日 (期限 {d})")
+                  notes.append(f"data access残{days:.0f}日({d})")
                   if days < 14:
                       problems.append(f"IG data access残{days:.0f}日 (期限 {d}) — タッキーの再認証が必要")
           except Exception as exc:
@@ -84,7 +85,7 @@ jobs:
           try:
               q = urllib.parse.urlencode({"fields": "id", "access_token": os.environ["THREADS_TOKEN"]})
               get_json(f"https://graph.threads.net/v1.0/me?{q}")
-              notes.append("Threads token有効")
+              notes.append("Threads有効")
           except Exception as exc:
               problems.append(f"Threadsトークン無効の可能性: {type(exc).__name__} — Refresh Threads Token workflowを確認")
 
@@ -106,17 +107,19 @@ jobs:
               return (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
 
           for wf, label, limit_min in [
-              ("auto-post-instagram.yml", "IG自動投稿", 150),
-              ("sync-instagram-insights.yml", "IGインサイト同期", 720),
+              ("auto-post-instagram.yml", "IG投稿", 150),
+              ("auto-post-threads.yml", "Threads投稿", 1500),
+              ("auto-post-x.yml", "X投稿", 1500),
+              ("sync-instagram-insights.yml", "IG同期", 720),
           ]:
               try:
                   age = latest_success_age_min(wf)
                   if age is None:
-                      problems.append(f"{label}: success実績が見つからない")
+                      notes.append(f"{label}:実績なし")
                   elif age > limit_min:
                       problems.append(f"{label}: 最終success {age/60:.1f}h前 (許容 {limit_min/60:.1f}h)")
                   else:
-                      notes.append(f"{label} OK ({age:.0f}分前)")
+                      notes.append(f"{label}OK({age:.0f}分前)")
               except Exception as exc:
                   problems.append(f"{label}の確認に失敗: {type(exc).__name__}")
 
@@ -129,20 +132,31 @@ jobs:
               fh.write("## Cloud Sentinel\n" + "\n".join(f"- {l}" for l in lines) + "\n")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write("problems=" + " / ".join(problems)[:800].replace("\n", " ") + "\n")
+              fh.write("notes=" + " / ".join(notes)[:800].replace("\n", " ") + "\n")
           sys.exit(1 if problems else 0)
           PY
 
-      - name: Push alert to phone (ntfy)
-        if: failure()
+      # 朝夜の要点を必ずスマホへ(成功時も✅・失敗時は🚨高優先)。morning-brief/監視のクラウド代替。
+      - name: Send digest to phone (ntfy)
+        if: always()
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           PROBLEMS: ${{ steps.checks.outputs.problems }}
+          NOTES: ${{ steps.checks.outputs.notes }}
+          SCHEDULE: ${{ github.event.schedule }}
+          OUTCOME: ${{ steps.checks.outcome }}
         run: |
-          if [ -n "$NTFY_TOPIC" ]; then
-            curl -s \
-              -H "Title: Cloud Sentinel NG" \
-              -H "Priority: high" \
-              -H "Tags: rotating_light" \
-              -d "${PROBLEMS:-checks failed} / 詳細: GitHub Actions > Cloud Sentinel" \
+          [ -z "$NTFY_TOPIC" ] && exit 0
+          case "$SCHEDULE" in
+            "0 23 * * *") TITLE="☀️ 朝の番人" ;;
+            "0 11 * * *") TITLE="🌙 夜の番人" ;;
+            *)            TITLE="🔍 Sentinel手動チェック" ;;
+          esac
+          if [ "$OUTCOME" = "success" ]; then
+            curl -s -H "Title: $TITLE" -H "Tags: white_check_mark" \
+              -d "✅ 全部OK / ${NOTES}" "https://ntfy.sh/${NTFY_TOPIC}" > /dev/null || true
+          else
+            curl -s -H "Title: $TITLE 🚨" -H "Priority: high" -H "Tags: rotating_light" \
+              -d "🚨 ${PROBLEMS} / ✅ ${NOTES} / 詳細: GitHub Actions > Cloud Sentinel" \
               "https://ntfy.sh/${NTFY_TOPIC}" > /dev/null || true
           fi
