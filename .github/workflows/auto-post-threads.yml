@@ -1,4 +1,5 @@
 # 15分ごとにスプレッドシートをチェックし、投稿時間が来た投稿を自動でThreadsに投稿。
+# GitHub Actionsの混雑しやすい */15 を避け、数分ずらしてschedule skipを減らす。
 # MacBookがオフでもGitHub Actionsで自動実行される。
 #
 # Instagram自動投稿（auto-post-instagram.yml）と同アーキテクチャ。
@@ -7,7 +8,7 @@ name: Auto Post Threads
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '8,23,38,53 * * * *'
   workflow_dispatch:
     inputs:
       force_post:

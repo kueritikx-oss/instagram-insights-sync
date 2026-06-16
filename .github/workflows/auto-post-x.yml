@@ -1,11 +1,12 @@
 # X自動投稿 (twikit版) — 公式APIの従量課金なしで投稿
 # twikit (X内部GraphQL API) + セッションCookie認証
 # 15分ごとにスプシチェック → 投稿時間が来たらツイート
+# GitHub Actionsの混雑しやすい */15 を避け、数分ずらしてschedule skipを減らす。
 name: Auto Post X
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '5,20,35,50 * * * *'
   workflow_dispatch:
     inputs:
       force_post:
