@@ -1,0 +1,52 @@
+# GitHub側の副系。X/Threads投稿workflowが古くなった時だけworkflow_dispatchで起こす。
+# 投稿そのものは各auto-post workflowに集約し、force指定なしで通常のready判定に任せる。
+name: Auto Post X/Threads Watchdog
+
+on:
+  schedule:
+    # X(5,20,35,50) / Threads(8,23,38,53) の後。schedule skip時だけ起こす。
+    - cron: '12,27,42,57 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    concurrency:
+      group: social-auto-post-watchdog
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Check X auto-post freshness
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          WORKFLOW_WATCH_REPO: ${{ github.repository }}
+          WORKFLOW_WATCH_FILE: auto-post-x.yml
+          WORKFLOW_WATCH_STALE_MINUTES: '45'
+          WORKFLOW_WATCH_FAILURE_RETRY_MINUTES: '30'
+        run: python3 scripts/dispatch_workflow_if_stale.py
+
+      - name: Check Threads auto-post freshness
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+          WORKFLOW_WATCH_REPO: ${{ github.repository }}
+          WORKFLOW_WATCH_FILE: auto-post-threads.yml
+          WORKFLOW_WATCH_STALE_MINUTES: '45'
+          WORKFLOW_WATCH_FAILURE_RETRY_MINUTES: '30'
+        run: python3 scripts/dispatch_workflow_if_stale.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true

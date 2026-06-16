@@ -108,8 +108,8 @@ jobs:
 
           for wf, label, limit_min in [
               ("auto-post-instagram.yml", "IG投稿", 150),
-              ("auto-post-threads.yml", "Threads投稿", 1500),
-              ("auto-post-x.yml", "X投稿", 1500),
+              ("auto-post-threads.yml", "Threads投稿", 180),
+              ("auto-post-x.yml", "X投稿", 180),
               ("sync-instagram-insights.yml", "IG同期", 720),
           ]:
               try:
