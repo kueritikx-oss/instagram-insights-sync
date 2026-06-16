@@ -90,7 +90,22 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: |
           echo "📊 週次戦略レビューを実行中..."
-          python instagram_strategy_loop.py weekly
+          set -o pipefail
+          python instagram_strategy_loop.py weekly 2>&1 | tee /tmp/sl_weekly.txt
+
+      - name: Notify weekly summary (ntfy)
+        if: >-
+          success() &&
+          (steps.mode.outputs.mode == 'weekly' || steps.mode.outputs.mode == 'all')
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          [ -z "$NTFY_TOPIC" ] && exit 0
+          SUM=$(grep -E "TOP|保存|リーチ|来週|最強|組み合わせ|フック|🔥|💾|📊|🏆" /tmp/sl_weekly.txt 2>/dev/null | grep -vE "接続中|読み込み中" | tail -12 | head -c 1000)
+          [ -z "$SUM" ] && SUM="週次レビュー完了"
+          printf -v BODY '%s\n\n詳細はスプシ「戦略ループ_週次」タブ' "$SUM"
+          curl -s -H "Title: 📊 週次SNSレポート" -H "Tags: bar_chart" \
+            -d "$BODY" "https://ntfy.sh/${NTFY_TOPIC}" > /dev/null || true
 
       # ====== Monthly Analysis ======
       - name: Run monthly analysis
@@ -103,7 +118,22 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: |
           echo "📈 月次戦略分析を実行中..."
-          python instagram_strategy_loop.py monthly
+          set -o pipefail
+          python instagram_strategy_loop.py monthly 2>&1 | tee /tmp/sl_monthly.txt
+
+      - name: Notify monthly summary (ntfy)
+        if: >-
+          success() &&
+          (steps.mode.outputs.mode == 'monthly' || steps.mode.outputs.mode == 'monthly_and_hooks' || steps.mode.outputs.mode == 'all')
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          [ -z "$NTFY_TOPIC" ] && exit 0
+          SUM=$(grep -E "リーチ|保存|フォロー|PV|ピラー|ベンチマーク|配分|📈|🏆|前月" /tmp/sl_monthly.txt 2>/dev/null | grep -vE "接続中|読み込み中" | tail -12 | head -c 1000)
+          [ -z "$SUM" ] && SUM="月次分析完了"
+          printf -v BODY '%s\n\n詳細はスプシ「戦略ループ_月次」タブ' "$SUM"
+          curl -s -H "Title: 📅 月次SNSレポート" -H "Tags: calendar" \
+            -d "$BODY" "https://ntfy.sh/${NTFY_TOPIC}" > /dev/null || true
 
       # ====== Hook Bank Update ======
       - name: Update hook bank
@@ -133,3 +163,10 @@ jobs:
           else
             echo "✅ Token unchanged, skipping save"
           fi
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
