@@ -52,6 +52,7 @@ jobs:
       # ====== 投稿レベルインサイト（毎回実行）======
       - name: Run media insights sync (v2.0)
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
@@ -61,6 +62,7 @@ jobs:
       - name: Auto-generate post analysis
         if: success()
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           PYTHONUNBUFFERED: '1'
         run: python fill_post_analysis.py --force
@@ -88,6 +90,7 @@ jobs:
       - name: Run account daily insights
         if: success() && (steps.check_account.outputs.run_account == 'true' || github.event_name == 'workflow_dispatch')
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
@@ -104,6 +107,7 @@ jobs:
       - name: Run account weekly demographics (Monday only)
         if: success() && steps.check_account.outputs.run_weekly == 'true'
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}

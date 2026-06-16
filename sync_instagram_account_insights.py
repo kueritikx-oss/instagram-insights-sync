@@ -28,10 +28,33 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from google.auth.transport.requests import Request
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
+
+# ========== システムブラウザ強制（Google WebView拒否対策） ==========
+import contextlib, webbrowser as _wb
+
+class _SystemBrowser:
+    name = "system-default"
+    def open(self, url, new=0, autoraise=True):
+        import subprocess as _sp
+        _sp.Popen(["open", url]) if sys.platform == "darwin" else _sp.Popen(["xdg-open", url])
+        return True
+    open_new = open_new_tab = open
+
+@contextlib.contextmanager
+def _force_system_browser():
+    _orig, _env = _wb.get, os.environ.pop("BROWSER", None)
+    _wb.get = lambda using=None: _SystemBrowser()
+    try:
+        yield
+    finally:
+        _wb.get = _orig
+        if _env is not None:
+            os.environ["BROWSER"] = _env
 
 # ========== パス・認証 ==========
 DEFAULT_BASE_DIR = Path(
@@ -142,6 +165,15 @@ WEEKDAY_JP = ["月", "火", "水", "木", "金", "土", "日"]
 # ========== 認証 ==========
 
 def get_google_credentials() -> Credentials:
+    service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if service_account_json and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        info = json.loads(service_account_json)
+        if info.get("type") == "service_account":
+            return service_account.Credentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
+    if service_account_file and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        return service_account.Credentials.from_service_account_file(service_account_file, scopes=GOOGLE_SCOPES)
+
     GOOGLE_AUTH_DIR.mkdir(parents=True, exist_ok=True)
     creds: Optional[Credentials] = None
     if TOKEN_FILE.exists():
@@ -154,7 +186,8 @@ def get_google_credentials() -> Credentials:
             if not CREDS_FILE.exists():
                 raise FileNotFoundError(f"credentials.json が見つかりません: {CREDS_FILE}")
             flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_FILE), GOOGLE_SCOPES)
-            creds = flow.run_local_server(port=0)
+            with _force_system_browser():
+                creds = flow.run_local_server(port=0)
             _token_reauth_happened = True
         with TOKEN_FILE.open("w", encoding="utf-8") as f:
             f.write(creds.to_json())

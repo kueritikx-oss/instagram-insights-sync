@@ -63,6 +63,7 @@ from twikit.errors import (
     TooManyRequests, Unauthorized, Forbidden,
     TwitterException, DuplicateTweet,
 )
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -147,6 +148,18 @@ def count_tweet_chars(text: str) -> int:
 # ── Google Sheets ─────────────────────────────────────────────────────
 
 def get_sheets_service():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if service_account_json and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        info = json.loads(service_account_json)
+        if info.get("type") == "service_account":
+            creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+            return build("sheets", "v4", credentials=creds)
+    if service_account_file and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        creds = service_account.Credentials.from_service_account_file(service_account_file, scopes=scopes)
+        return build("sheets", "v4", credentials=creds)
+
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
     if token_json:
         info = json.loads(token_json)
@@ -159,7 +172,7 @@ def get_sheets_service():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=info.get("client_id"),
         client_secret=info.get("client_secret"),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        scopes=scopes,
     )
     return build("sheets", "v4", credentials=creds)
 
@@ -261,13 +274,23 @@ async def twikit_upload_media(client: TwikitClient, image_url: str) -> str:
 
 async def twikit_post_tweet(client: TwikitClient, text: str,
                             media_ids=None, reply_to=None):
-    """ツイートを投稿。Tweet objectを返す"""
-    tweet = await client.create_tweet(
-        text=text,
-        media_ids=media_ids,
-        reply_to=reply_to,
-    )
-    return tweet
+    """ツイートを投稿。226エラーは最大3回リトライ（2-5秒間隔）"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            tweet = await client.create_tweet(
+                text=text,
+                media_ids=media_ids,
+                reply_to=reply_to,
+            )
+            return tweet
+        except Exception as e:
+            if "226" in str(e) and attempt < max_retries - 1:
+                delay = 3 + attempt * 2  # 3s, 5s
+                print(f"  ⚠️ 226検知, リトライ {attempt+1}/{max_retries} ({delay}s後)...")
+                await asyncio.sleep(delay)
+                continue
+            raise
 
 
 # ── スケジュール判定 ──────────────────────────────────────────────────
@@ -465,6 +488,7 @@ async def execute_post(service, client: TwikitClient, post_info,
         # 汎用transientチェック
         is_transient = any(kw in error_msg for kw in (
             "Rate limit", "Too Many", "429", "Connection", "Timeout",
+            "226", "looks like it might be automated",
         ))
         if is_transient:
             batch_update_cells(service, [
@@ -505,9 +529,8 @@ async def async_main(args):
         print("❌ FATAL: X_SPREADSHEET_ID 未設定")
         sys.exit(1)
 
-    # サービス初期化
+    # サービス初期化（Sheetsは常に必要。X認証は投稿対象がある時だけ行う）
     service = get_sheets_service()
-    client = await get_twikit_client()
 
     # 日次投稿数チェック
     if not args.dry_run and not args.force:
@@ -523,8 +546,10 @@ async def async_main(args):
         if not post_info:
             print(f"❌ {args.force} が見つかりません")
             return
+        client = None if args.dry_run else await get_twikit_client()
         await execute_post(service, client, post_info, dry_run=args.dry_run)
-        save_cookies(client)
+        if client:
+            save_cookies(client)
         return
 
     # スケジュール投稿
@@ -534,6 +559,7 @@ async def async_main(args):
         return
 
     print(f"📋 {len(ready)}件の投稿を検出")
+    client = None if args.dry_run else await get_twikit_client()
     posted = 0
 
     for post_info in ready:
@@ -548,7 +574,8 @@ async def async_main(args):
                 await asyncio.sleep(POST_GAP_SECONDS)
 
     # Cookie保存（ct0ローテーション対応）
-    save_cookies(client)
+    if client:
+        save_cookies(client)
 
     print()
     print(f"🎉 完了: {posted}/{len(ready)}件を投稿")

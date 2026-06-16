@@ -38,12 +38,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -57,6 +59,7 @@ POST_METRICS = "views,likes,replies,reposts,quotes,shares"
 THREADS_SPREADSHEET_ID = "1hdBlZBn9s688f1ZwkTiO3suY27tJEHtXMEPkopLdBNI"
 THREADS_SHEET_NAME = "Threads投稿毎データ"
 DATA_START_ROW = 4
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 # ── 列インデックス（0-based）────────────────────────────────────────
 
@@ -115,6 +118,14 @@ def _col_idx_to_letter(idx: int) -> str:
 
 SHEET_READ_END_COL = _col_idx_to_letter(_MAX_COL_IDX)
 
+
+def sanitize_error(error: Exception | str) -> str:
+    """Avoid leaking access tokens in API error URLs."""
+    text = str(error)
+    text = re.sub(r"(access_token=)[^&\s]+", r"\1***", text)
+    return text
+
+
 # スナップショット判定閾値
 SNAPSHOT_1D_MIN_HOURS = 24
 SNAPSHOT_1D_MAX_HOURS = 72   # 3日以内なら「scheduled」、超えたら「backfill」
@@ -136,6 +147,17 @@ TOKEN_FILE = GOOGLE_AUTH_DIR / "token.json"
 
 def get_sheets_service():
     """Google Sheets APIサービスを取得"""
+    service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if service_account_json and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        info = json.loads(service_account_json)
+        if info.get("type") == "service_account":
+            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+            return build("sheets", "v4", credentials=creds)
+    if service_account_file and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        creds = service_account.Credentials.from_service_account_file(service_account_file, scopes=SCOPES)
+        return build("sheets", "v4", credentials=creds)
+
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
     if token_json:
         info = json.loads(token_json)
@@ -264,7 +286,7 @@ def fetch_account_insights(token: str, user_id: str, days: int = 7) -> dict:
                 vals = item.get("values", [])
                 metrics["followers_count"] = vals[0].get("value", 0) if vals else 0
     except Exception as e:
-        print(f"  ⚠ フォロワー数取得失敗: {e}")
+        print(f"  ⚠ フォロワー数取得失敗: {sanitize_error(e)}")
 
     return metrics
 
@@ -423,7 +445,7 @@ def sync_insights(service, token: str, dry_run: bool = False,
             time.sleep(API_CALL_DELAY)
 
         except Exception as e:
-            print(f"  ❌ {post_num}: {e}")
+            print(f"  ❌ {post_num}: {sanitize_error(e)}")
             stats["errors"] += 1
 
     return stats
@@ -472,7 +494,7 @@ def main():
             for k, v in sorted(acct.items()):
                 print(f"  {k}: {v:,}" if isinstance(v, int) else f"  {k}: {v}")
         except Exception as e:
-            print(f"  ❌ {e}")
+            print(f"  ❌ {sanitize_error(e)}")
 
     print()
     print("✅ 完了")

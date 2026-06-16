@@ -39,6 +39,7 @@ jobs:
 
       - name: Run TikTok auto-poster
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
           TIKTOK_TOKEN_JSON: ${{ secrets.TIKTOK_TOKEN_JSON }}
           TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
@@ -53,3 +54,10 @@ jobs:
           fi
           python cloud_auto_post_tiktok.py --window 45 ${FORCE_ARG}
         shell: bash
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true

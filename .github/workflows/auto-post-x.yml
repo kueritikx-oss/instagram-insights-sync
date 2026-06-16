@@ -40,6 +40,7 @@ jobs:
 
       - name: Run X auto-poster (twikit)
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
           TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
           X_SPREADSHEET_ID: ${{ secrets.X_SPREADSHEET_ID }}
@@ -52,3 +53,10 @@ jobs:
           fi
           python cloud_auto_post_x.py --window 45 ${FORCE_ARG}
         shell: bash
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true

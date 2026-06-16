@@ -42,6 +42,7 @@ jobs:
 
       - name: Run Threads auto-poster
         env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
@@ -54,3 +55,10 @@ jobs:
           fi
           python cloud_auto_post_threads.py --window 45 ${FORCE_ARG}
         shell: bash
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true

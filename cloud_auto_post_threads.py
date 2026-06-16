@@ -43,6 +43,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
+from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -139,6 +140,18 @@ OPTIMAL_SCHEDULE = {
 
 def get_sheets_service():
     """Google Sheets APIサービスを取得"""
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if service_account_json and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        info = json.loads(service_account_json)
+        if info.get("type") == "service_account":
+            creds = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+            return build("sheets", "v4", credentials=creds)
+    if service_account_file and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        creds = service_account.Credentials.from_service_account_file(service_account_file, scopes=scopes)
+        return build("sheets", "v4", credentials=creds)
+
     token_json = os.environ.get("GOOGLE_TOKEN_JSON")
     if token_json:
         info = json.loads(token_json)
@@ -152,7 +165,7 @@ def get_sheets_service():
         token_uri="https://oauth2.googleapis.com/token",
         client_id=info.get("client_id"),
         client_secret=info.get("client_secret"),
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+        scopes=scopes,
     )
     return build("sheets", "v4", credentials=creds)
 
