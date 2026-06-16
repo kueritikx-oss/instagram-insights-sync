@@ -155,6 +155,13 @@ BENCHMARKS = {
 
 # ── ユーティリティ ─────────────────────────────────────────
 def get_service():
+    # Service Account優先(鍵は失効しない) / OAuth token.json は fallback。
+    # クラウドは auth/service_account.json(workflowがSecretから書く)を使う。
+    sa_path = os.path.join(_auth_dir, "service_account.json")
+    if os.path.exists(sa_path):
+        from google.oauth2 import service_account as _sa
+        creds = _sa.Credentials.from_service_account_file(sa_path, scopes=SCOPES)
+        return build("sheets", "v4", credentials=creds)
     with open(TOKEN_FILE) as f:
         info = json.load(f)
     creds = Credentials(
