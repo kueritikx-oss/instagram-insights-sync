@@ -27,10 +27,12 @@ jobs:
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
           mkdir -p auth
           printf '%s' "$GOOGLE_CREDENTIALS_JSON" > auth/credentials.json
           printf '%s' "$GOOGLE_TOKEN_JSON" > auth/token.json
+          printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > auth/service_account.json
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -40,5 +42,13 @@ jobs:
           INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
           INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
           INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           PYTHONUNBUFFERED: '1'
         run: python sync_sheet_integrity.py
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true

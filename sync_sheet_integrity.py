@@ -21,6 +21,7 @@ from pathlib import Path
 
 import requests
 from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
@@ -47,6 +48,17 @@ DEFAULT_BASE_DIR = Path(
 
 # ── 認証 ────────────────────────────────────────────
 def get_google_credentials():
+    service_account_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON")
+    service_account_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+
+    if service_account_json and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        info = json.loads(service_account_json)
+        if info.get("type") == "service_account":
+            return service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    if service_account_file and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        return service_account.Credentials.from_service_account_file(service_account_file, scopes=scopes)
+
     auth_dir = Path(
         os.environ.get(
             "INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR",
@@ -55,7 +67,6 @@ def get_google_credentials():
     )
     token_file = auth_dir / "token.json"
     creds_file = auth_dir / "credentials.json"
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
 
     creds = None
     if token_file.exists():
