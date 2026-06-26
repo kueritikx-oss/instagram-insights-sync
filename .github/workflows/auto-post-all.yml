@@ -1,0 +1,153 @@
+# Instagram / X / Threads 統合自動投稿ワークフロー
+#
+# [改訂理由] 元の15分×3ワークフロー構成はGitHub Actions無料枠(2,000分/月)を
+# 大幅に超過(月16,000分超)していたため、90分間隔の単一ワークフローに統合。
+# --window 120 で投稿を最大120分以内に補足できる。
+#
+# 月間消費見込み: ~480分 (旧: ~8,640分)
+name: Auto Post All Platforms
+
+on:
+  schedule:
+    # 90分ごと (JST 0:00-23:30 全時間帯カバー)
+    # 毎時0分と30分を避けて混雑回避
+    - cron: '7 0,2,4,6,8,10,12,14,16,18,20,22 * * *'
+    - cron: '37 1,3,5,7,9,11,13,15,17,19,21,23 * * *'
+  workflow_dispatch:
+    inputs:
+      force_instagram:
+        description: 'Instagram強制投稿番号'
+        required: false
+        type: string
+      force_x:
+        description: 'X強制投稿番号 (X-001形式)'
+        required: false
+        type: string
+      force_threads:
+        description: 'Threads強制投稿番号 (T-001形式)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  auto-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: all-platforms-auto-post
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Create auth dir and write credentials
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p auth
+          printf '%s' "$GOOGLE_CREDENTIALS_JSON" > auth/credentials.json
+          printf '%s' "$GOOGLE_TOKEN_JSON" > auth/token.json
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > auth/service_account.json
+          fi
+          sha256sum auth/token.json > /tmp/token_hash_before.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pynacl twikit httpx
+
+      - name: Post to Instagram
+        id: instagram
+        continue-on-error: true
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_SERVICE_ACCOUNT_FILE: auth/service_account.json
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          INSTAGRAM_ACCESS_TOKEN: ${{ secrets.INSTAGRAM_ACCESS_TOKEN }}
+          INSTAGRAM_IG_USER_ID: ${{ secrets.INSTAGRAM_IG_USER_ID }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.force_instagram }}" ]; then
+            ARGS="--force ${{ inputs.force_instagram }}"
+          fi
+          python cloud_auto_post.py --window 120 $ARGS
+
+      - name: Post to X
+        id: x
+        continue-on-error: true
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
+          X_SPREADSHEET_ID: ${{ secrets.X_SPREADSHEET_ID }}
+          FORCE_POST_NUM: ${{ inputs.force_x }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          FORCE_ARG=""
+          if [ -n "${FORCE_POST_NUM}" ]; then
+            FORCE_ARG="--force ${FORCE_POST_NUM}"
+          fi
+          python cloud_auto_post_x.py --window 120 ${FORCE_ARG}
+
+      - name: Post to Threads
+        id: threads
+        continue-on-error: true
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          FORCE_POST: ${{ inputs.force_threads }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          FORCE_ARG=""
+          if [ -n "${FORCE_POST}" ]; then
+            FORCE_ARG="--force ${FORCE_POST}"
+          fi
+          python cloud_auto_post_threads.py --window 120 ${FORCE_ARG}
+
+      - name: Auto-save refreshed Google Token
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -s auth/service_account.json ]; then
+            echo "✅ Service Account mode. OAuth token auto-save skipped."
+            exit 0
+          fi
+          if [ ! -f auth/token.json ]; then
+            echo "⚠️ auth/token.json が存在しない。スキップ。"
+            exit 0
+          fi
+          sha256sum auth/token.json > /tmp/token_hash_after.txt
+          if diff -q /tmp/token_hash_before.txt /tmp/token_hash_after.txt > /dev/null 2>&1; then
+            echo "✅ Google Token 変更なし。スキップ。"
+          else
+            echo "🔄 Google Token が更新された。Secret書き戻し..."
+            python scripts/save_google_token.py
+          fi
+
+      - name: Fail if all platforms failed
+        if: steps.instagram.outcome == 'failure' && steps.x.outcome == 'failure' && steps.threads.outcome == 'failure'
+        run: |
+          echo "❌ 全プラットフォームで投稿失敗"
+          exit 1
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
