@@ -3,9 +3,8 @@
 name: Auto Post Instagram Watchdog
 
 on:
-  schedule:
-    # 本体cron(7,22,37,52分)の少し後。1回欠けたら次の番人でdispatchする。
-    - cron: '14,29,44,59 * * * *'
+  # 統合ワークフロー(auto-post-all.yml)に移行済みのためスケジュール無効化。
+  # 手動起動のみ残す。
   workflow_dispatch:
 
 permissions:
