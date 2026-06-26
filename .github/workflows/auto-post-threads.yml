@@ -7,8 +7,8 @@
 name: Auto Post Threads
 
 on:
-  schedule:
-    - cron: '8,23,38,53 * * * *'
+  # スケジュール実行は auto-post-all.yml (統合ワークフロー) に移行済み。
+  # このファイルはThreads単体の緊急手動実行用として残す。
   workflow_dispatch:
     inputs:
       force_post:
