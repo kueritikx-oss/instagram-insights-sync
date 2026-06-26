@@ -3,9 +3,8 @@
 name: Auto Post X/Threads Watchdog
 
 on:
-  schedule:
-    # X(5,20,35,50) / Threads(8,23,38,53) の後。schedule skip時だけ起こす。
-    - cron: '12,27,42,57 * * * *'
+  # 統合ワークフロー(auto-post-all.yml)に移行済みのためスケジュール無効化。
+  # 手動起動のみ残す。
   workflow_dispatch:
 
 permissions:
