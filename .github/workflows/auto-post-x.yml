@@ -5,8 +5,8 @@
 name: Auto Post X
 
 on:
-  schedule:
-    - cron: '5,20,35,50 * * * *'
+  # スケジュール実行は auto-post-all.yml (統合ワークフロー) に移行済み。
+  # このファイルはX単体の緊急手動実行用として残す。
   workflow_dispatch:
     inputs:
       force_post:
