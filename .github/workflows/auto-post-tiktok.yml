@@ -4,7 +4,7 @@ name: Auto Post TikTok
 
 on:
   schedule:
-    - cron: '*/15 * * * *'
+    - cron: '5 9,15,21 * * *'
   workflow_dispatch:
     inputs:
       force_post:
