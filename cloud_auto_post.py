@@ -319,7 +319,7 @@ def read_all_rows(service):
     end_col = col_letter(max(COL_LAST_ATTEMPT + 3, 100))  # バッファ含めて少し広め
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A4:{end_col}220",
+        range=f"{SHEET_NAME}!A4:{end_col}500",
     ).execute()
     return result.get("values", [])
 
