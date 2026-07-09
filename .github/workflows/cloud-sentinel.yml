@@ -1,7 +1,9 @@
 name: Cloud Sentinel
 
 # Macが閉じていても・どのアプリが起動してなくても動く"外出時の朝夜の番人"。
-# 役割: トークン期限とクラウド自動化の生存確認。データ書き込みは一切しない(read-only + ntfy)。
+# 役割: (1)トークン期限とクラウド自動化の生存確認。顧客データ書き込みは一切しない(read-only + ntfy)。
+#       (2)自己修復: schedule休眠や課金ブロック復帰後に古くなった投稿workflowをworkflow_dispatchで起こす。
+#          watchdog自身がschedule依存で一緒に休眠しても、この番人(2回/日・確実に稼働)が最後の砦になる。
 # 毎朝08:00 JST / 毎夜20:00 JST に、成功時も「✅要点」、異常時は「🚨」をntfyでスマホへ送る。
 # 異常時はworkflow自体もfailさせGitHubメール通知も飛ばす。
 
@@ -17,7 +19,7 @@ on:
         default: "no"
 
 permissions:
-  actions: read
+  actions: write # 自己修復で古い投稿workflowをworkflow_dispatch/re-enableするため(read→write)
   contents: read
 
 concurrency:
@@ -29,6 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Checkout # 自己修復stepが scripts/dispatch_workflow_if_stale.py を使うため
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - name: Run checks
         id: checks
         env:
@@ -135,6 +140,26 @@ jobs:
               fh.write("notes=" + " / ".join(notes)[:800].replace("\n", " ") + "\n")
           sys.exit(1 if problems else 0)
           PY
+
+      # 自己修復: schedule休眠(課金ブロック復帰後など)や連続失敗で古くなった投稿workflowを起こす。
+      # 通常のready判定に任せるだけ(force指定なし)。顧客データ書き込みはしない。既存watchdogと同じ
+      # scripts/dispatch_workflow_if_stale.py を再利用。workflow名は静的なので外部入力injectionリスクなし。
+      - name: Self-heal stale post workflows
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
+        run: |
+          set +e
+          for spec in "auto-post-instagram.yml:150" "auto-post-threads.yml:180" "auto-post-x.yml:180"; do
+            wf="${spec%%:*}"; stale="${spec##*:}"
+            echo "--- self-heal: $wf (stale>${stale}m) ---"
+            WORKFLOW_WATCH_FILE="$wf" \
+            WORKFLOW_WATCH_STALE_MINUTES="$stale" \
+            WORKFLOW_WATCH_FAILURE_RETRY_MINUTES="$stale" \
+            python3 scripts/dispatch_workflow_if_stale.py \
+              || echo "self-heal for $wf returned non-zero (continuing)"
+          done
+          exit 0
 
       # 朝夜の要点を必ずスマホへ(成功時も✅・失敗時は🚨高優先)。morning-brief/監視のクラウド代替。
       - name: Send digest to phone (ntfy)
