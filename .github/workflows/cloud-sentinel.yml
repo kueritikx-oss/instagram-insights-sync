@@ -111,10 +111,11 @@ jobs:
               ts = ts.replace(tzinfo=datetime.timezone.utc)
               return (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
 
+          # 投稿は auto-post-all.yml(90分間隔・IG/X/Threads統合)に一本化済。
+          # 個別 auto-post-{instagram,threads,x}.yml は手動dispatch専用なので監視対象にしない
+          # (schedule実行されず永遠にstale=誤アラートになるため)。
           for wf, label, limit_min in [
-              ("auto-post-instagram.yml", "IG投稿", 150),
-              ("auto-post-threads.yml", "Threads投稿", 180),
-              ("auto-post-x.yml", "X投稿", 180),
+              ("auto-post-all.yml", "統合投稿(IG/X/Threads)", 200),
               ("sync-instagram-insights.yml", "IG同期", 720),
           ]:
               try:
@@ -141,25 +142,18 @@ jobs:
           sys.exit(1 if problems else 0)
           PY
 
-      # 自己修復: schedule休眠(課金ブロック復帰後など)や連続失敗で古くなった投稿workflowを起こす。
+      # 自己修復: schedule休眠(課金ブロック復帰後など)や連続失敗で統合投稿workflowが古くなったら起こす。
+      # 対象は実際の投稿元 auto-post-all.yml のみ(個別workflowを叩くと二重投稿になるため叩かない)。
       # 通常のready判定に任せるだけ(force指定なし)。顧客データ書き込みはしない。既存watchdogと同じ
       # scripts/dispatch_workflow_if_stale.py を再利用。workflow名は静的なので外部入力injectionリスクなし。
-      - name: Self-heal stale post workflows
+      - name: Self-heal stale unified post workflow
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
-        run: |
-          set +e
-          for spec in "auto-post-instagram.yml:150" "auto-post-threads.yml:180" "auto-post-x.yml:180"; do
-            wf="${spec%%:*}"; stale="${spec##*:}"
-            echo "--- self-heal: $wf (stale>${stale}m) ---"
-            WORKFLOW_WATCH_FILE="$wf" \
-            WORKFLOW_WATCH_STALE_MINUTES="$stale" \
-            WORKFLOW_WATCH_FAILURE_RETRY_MINUTES="$stale" \
-            python3 scripts/dispatch_workflow_if_stale.py \
-              || echo "self-heal for $wf returned non-zero (continuing)"
-          done
-          exit 0
+          WORKFLOW_WATCH_FILE: auto-post-all.yml
+          WORKFLOW_WATCH_STALE_MINUTES: '200'
+          WORKFLOW_WATCH_FAILURE_RETRY_MINUTES: '200'
+        run: python3 scripts/dispatch_workflow_if_stale.py || echo "self-heal returned non-zero (non-fatal)"
 
       # 朝夜の要点を必ずスマホへ(成功時も✅・失敗時は🚨高優先)。morning-brief/監視のクラウド代替。
       - name: Send digest to phone (ntfy)
