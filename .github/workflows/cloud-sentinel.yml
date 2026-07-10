@@ -34,6 +34,18 @@ jobs:
       - name: Checkout # 自己修復stepが scripts/dispatch_workflow_if_stale.py を使うため
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      # X生存確認用: Sheets読取(read-only)のためservice accountを書き出す。
+      # auto-post-all.yml の auth書き出しパターンに合わせる(secretのインライン展開禁止・env経由)。
+      - name: Write service account credentials for X check (read-only)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          mkdir -p auth
+          if [ -n "$GOOGLE_SERVICE_ACCOUNT_JSON" ]; then
+            printf '%s' "$GOOGLE_SERVICE_ACCOUNT_JSON" > auth/service_account.json
+          fi
+          pip install --quiet google-auth
+
       - name: Run checks
         id: checks
         env:
@@ -93,6 +105,87 @@ jobs:
               notes.append("Threads有効")
           except Exception as exc:
               problems.append(f"Threadsトークン無効の可能性: {type(exc).__name__} — Refresh Threads Token workflowを確認")
+
+          # 2.5) X投稿の生存確認 (Sheets読取のみ・read-only。書き込みは一切しない)
+          #   - 直近posted行のエラー列に '[auth]' があれば認証失効として警告
+          #   - 直近24hにpostedが1件もなければ停止の可能性として警告
+          #   ステータス列/エラー列/日付/時刻はヘッダー行1-3から名前検出(列番号ハードコード禁止)
+          try:
+              sa_path = "auth/service_account.json"
+              if not (os.path.exists(sa_path) and os.path.getsize(sa_path) > 0):
+                  notes.append("X生存確認: service accountなし→skip")
+              else:
+                  from google.auth.transport.requests import Request as _GARequest
+                  from google.oauth2 import service_account as _ga_sa
+                  _creds = _ga_sa.Credentials.from_service_account_file(
+                      sa_path, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+                  )
+                  _creds.refresh(_GARequest())
+                  x_sheet_id = "1rHnDoMHUK_K0_f7MLxHltiU6Y2ATsz3ztKwdf2Zg8Hc"
+                  rng = urllib.parse.quote("'X投稿毎データ'!A1:R500", safe="")
+                  vals = get_json(
+                      f"https://sheets.googleapis.com/v4/spreadsheets/{x_sheet_id}/values/{rng}",
+                      {"Authorization": f"Bearer {_creds.token}"},
+                  ).get("values", [])
+                  headers_rows = vals[:3]
+                  data_rows = vals[3:]  # A4以降
+
+                  def find_col(*keywords):
+                      for hrow in headers_rows:
+                          for idx, cell in enumerate(hrow):
+                              c = str(cell)
+                              if any(k in c for k in keywords):
+                                  return idx
+                      return None
+
+                  col_status = find_col("ステータス", "status")
+                  col_error = find_col("エラー", "error")
+                  col_date = find_col("日付")
+                  col_time = find_col("時刻", "時間")
+
+                  def cell(row, idx):
+                      return str(row[idx]).strip() if idx is not None and idx < len(row) else ""
+
+                  if col_status is None:
+                      problems.append("Xシート: ステータス列をヘッダー行1-3から検出できず — 列名変更の可能性")
+                  else:
+                      posted_rows = [r for r in data_rows if "posted" in cell(r, col_status).lower()]
+                      notes.append(f"X posted累計{len(posted_rows)}件")
+                      # (a) 直近posted行のエラー列に [auth]
+                      if col_error is not None:
+                          auth_hits = [
+                              r for r in posted_rows[-10:] if "[auth]" in cell(r, col_error).lower()
+                          ]
+                          if auth_hits:
+                              problems.append(
+                                  f"X: 直近posted行{len(auth_hits)}件のエラー列に[auth] — Cookie/認証失効の可能性"
+                              )
+                      # (b) 直近24hにpostedゼロ
+                      if col_date is not None:
+                          jst = datetime.timezone(datetime.timedelta(hours=9))
+                          now_jst = datetime.datetime.now(jst)
+                          recent = 0
+                          for r in posted_rows:
+                              dv = cell(r, col_date)
+                              try:
+                                  m, d = dv.replace("月", "/").replace("日", "").split("/")[:2]
+                                  dt = datetime.datetime(now_jst.year, int(m), int(d), tzinfo=jst)
+                                  if dt > now_jst + datetime.timedelta(days=2):
+                                      dt = dt.replace(year=now_jst.year - 1)  # 年跨ぎ補正
+                                  tv = cell(r, col_time)
+                                  if ":" in tv:
+                                      hh, mm = tv.split(":")[:2]
+                                      dt = dt.replace(hour=int(hh), minute=int(mm))
+                                  if (now_jst - dt).total_seconds() <= 86400 * 1:
+                                      recent += 1
+                              except (ValueError, IndexError):
+                                  continue
+                          if recent == 0:
+                              problems.append("X: 直近24hでposted 0件 — X自動投稿が停止している可能性")
+                          else:
+                              notes.append(f"X直近24h posted {recent}件")
+          except Exception as exc:
+              problems.append(f"X生存確認に失敗: {type(exc).__name__}")
 
           # 3) Cloud workflow freshness (latest success age)
           def latest_success_age_min(workflow_file):

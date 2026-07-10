@@ -110,8 +110,15 @@ def load_instagram_config():
 
 # ── Instagram API ───────────────────────────────────
 def fetch_all_instagram_posts(access_token, ig_user_id, max_pages=10):
-    """全投稿を取得（ページネーション付き）"""
+    """全投稿を取得（ページネーション付き）
+
+    戻り値: (all_posts, complete)
+      complete=False はページネーション途中でAPIエラーが起きた部分取得を意味する。
+      部分取得のまま「未投稿クリア」を走らせると、実際は投稿済みの行の
+      日付を誤って消すため、呼び出し側でガードすること。
+    """
     all_posts = []
+    complete = True
     url = (
         f"{GRAPH_API_BASE}/{ig_user_id}/media"
         f"?fields=id,caption,timestamp,like_count,comments_count,permalink"
@@ -122,6 +129,7 @@ def fetch_all_instagram_posts(access_token, ig_user_id, max_pages=10):
         resp = requests.get(url, timeout=30)
         if resp.status_code != 200:
             print(f"ERROR: Instagram API {resp.status_code}: {resp.text[:200]}")
+            complete = False
             break
         data = resp.json()
         posts = data.get("data", [])
@@ -131,8 +139,8 @@ def fetch_all_instagram_posts(access_token, ig_user_id, max_pages=10):
             break
         url = next_url
 
-    print(f"Instagram API: {len(all_posts)}件取得")
-    return all_posts
+    print(f"Instagram API: {len(all_posts)}件取得 (complete={complete})")
+    return all_posts, complete
 
 
 def parse_instagram_posts(posts):
@@ -329,7 +337,23 @@ def main():
     sheets_service = build("sheets", "v4", credentials=creds)
 
     # データ取得
-    ig_raw = fetch_all_instagram_posts(access_token, ig_user_id)
+    ig_raw, fetch_complete = fetch_all_instagram_posts(access_token, ig_user_id)
+
+    # ── 部分取得ガード ──
+    # 取得が部分失敗(ページ途中break)や異常に少ない(0件含む)場合、
+    # 「Instagramに存在しない＝未投稿」の判定が誤爆して
+    # 投稿済み行の日付/時刻を誤クリアするため、修正処理をスキップして exit 2。
+    MIN_EXPECTED_POSTS = 10  # 直近30日想定の下限
+    if not fetch_complete or len(ig_raw) < MIN_EXPECTED_POSTS:
+        print()
+        print(
+            f"⚠️ Instagram取得が不完全 (complete={fetch_complete}, "
+            f"{len(ig_raw)}件 < 下限{MIN_EXPECTED_POSTS}件) — "
+            "未投稿クリア等の修正処理をスキップします (誤クリア防止ガード)"
+        )
+        print("=" * 60)
+        sys.exit(2)
+
     ig_posts = parse_instagram_posts(ig_raw)
     sheet_rows = read_sheet_data(sheets_service)
 

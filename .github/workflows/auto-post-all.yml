@@ -139,6 +139,33 @@ jobs:
             python scripts/save_google_token.py
           fi
 
+      # 単一媒体失敗の可視化: 3媒体全滅は下のstepでfail(→critical通知)するが、
+      # 1〜2媒体だけの失敗はjobがsuccessのまま沈黙していたため、Discordへwarn通知を送る。
+      - name: Warn on partial platform failure (Discord)
+        if: >-
+          (steps.instagram.outcome == 'failure' || steps.x.outcome == 'failure' || steps.threads.outcome == 'failure') &&
+          !(steps.instagram.outcome == 'failure' && steps.x.outcome == 'failure' && steps.threads.outcome == 'failure')
+        env:
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          IG_OUTCOME: ${{ steps.instagram.outcome }}
+          X_OUTCOME: ${{ steps.x.outcome }}
+          THREADS_OUTCOME: ${{ steps.threads.outcome }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$DISCORD_WEBHOOK" ]; then
+            echo "DISCORD_WEBHOOK 未設定 → warn通知スキップ"
+            exit 0
+          fi
+          FAILED=""
+          [ "$IG_OUTCOME" = "failure" ] && FAILED="${FAILED}Instagram "
+          [ "$X_OUTCOME" = "failure" ] && FAILED="${FAILED}X "
+          [ "$THREADS_OUTCOME" = "failure" ] && FAILED="${FAILED}Threads "
+          echo "🟡 一部媒体失敗: ${FAILED}→ Discord warn通知"
+          NOW_UTC=$(date -u '+%Y-%m-%d %H:%M UTC')
+          curl -sS -X POST -H "Content-Type: application/json" \
+            -d "{\"username\": \"GitHub Actions Alert\", \"embeds\": [{\"title\": \"🟡 Auto Post All Platforms 一部媒体で投稿失敗\", \"description\": \"失敗媒体: ${FAILED}\\n(他媒体は成功。全滅時は別途criticalでfailします)\\n[実行ログを開く](${RUN_URL})\", \"color\": 16776960, \"fields\": [{\"name\": \"発生時刻\", \"value\": \"${NOW_UTC}\", \"inline\": true}, {\"name\": \"IG / X / Threads\", \"value\": \"${IG_OUTCOME} / ${X_OUTCOME} / ${THREADS_OUTCOME}\", \"inline\": true}], \"footer\": {\"text\": \"GitHub Actions\"}}]}" \
+            "$DISCORD_WEBHOOK" > /dev/null || echo "⚠️ Discord warn通知失敗 (non-fatal)"
+
       - name: Fail if all platforms failed
         if: steps.instagram.outcome == 'failure' && steps.x.outcome == 'failure' && steps.threads.outcome == 'failure'
         run: |

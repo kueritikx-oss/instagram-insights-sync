@@ -149,8 +149,13 @@ def main():
     print(f"     open_id: {new_data.get('open_id', 'N/A')}")
 
     # GitHub Secretに書き戻し
+    # TikTokのrefresh_tokenは回転式のため、書き戻し失敗を無視すると
+    # 次回リフレッシュ時に旧refresh_tokenが失効していて恒久失効するリスクがある。
+    # 失敗時はexit 1でworkflowをfailさせ、メール/アラートに乗せる。
     new_json = json.dumps(new_data)
-    save_to_github_secret("TIKTOK_TOKEN_JSON", new_json)
+    if not save_to_github_secret("TIKTOK_TOKEN_JSON", new_json):
+        print("❌ Secret書き戻しに失敗 — 回転式refresh_tokenの恒久失効リスクがあるためworkflowをfailさせる")
+        sys.exit(1)
 
     print("🎉 完了")
 
