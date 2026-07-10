@@ -44,6 +44,49 @@ async def _patched_get_indices(self, home_page_response, session, headers):
     return key_byte_indices[0], key_byte_indices[1:]
 
 _tx_mod.ClientTransaction.get_indices = _patched_get_indices
+
+# ── twikit v2.3.3 User モンキーパッチ ──────────────────────────────
+# Xの新GraphQL応答は name/screen_name/created_at 等を legacy から
+# core/avatar/location へ移動しており、twikit の User.__init__ が
+# KeyError で落ちる（client.user() / get_user_tweets 全滅）。
+# 新形式のフィールドを旧 legacy へ吸い上げ + 欠落キーにデフォルトを
+# 補ってから元の __init__ を呼ぶ。
+from twikit.user import User as _TwikitUser
+_orig_user_init = _TwikitUser.__init__
+
+def _defensive_user_init(self, client, data):
+    data = dict(data or {})
+    legacy = dict(data.get('legacy') or {})
+    core = data.get('core') or {}
+    for k in ('created_at', 'name', 'screen_name'):
+        legacy.setdefault(k, core.get(k, ''))
+    legacy.setdefault(
+        'profile_image_url_https', (data.get('avatar') or {}).get('image_url'))
+    legacy.setdefault(
+        'location', (data.get('location') or {}).get('location', ''))
+    legacy.setdefault(
+        'description', (data.get('profile_bio') or {}).get('description', ''))
+    entities = legacy.setdefault('entities', {})
+    desc_ent = entities.setdefault('description', {})
+    desc_ent.setdefault('urls', [])
+    _defaults = {
+        'pinned_tweet_ids_str': [], 'verified': False,
+        'possibly_sensitive': False, 'can_dm': None, 'can_media_tag': None,
+        'want_retweets': None, 'default_profile': None,
+        'default_profile_image': None, 'has_custom_timelines': None,
+        'followers_count': None, 'fast_followers_count': None,
+        'normal_followers_count': None, 'friends_count': None,
+        'favourites_count': None, 'listed_count': None, 'media_count': None,
+        'statuses_count': None, 'is_translator': None,
+        'translator_type': None, 'withheld_in_countries': [],
+    }
+    for k, v in _defaults.items():
+        legacy.setdefault(k, v)
+    data.setdefault('is_blue_verified', False)
+    data['legacy'] = legacy
+    _orig_user_init(self, client, data)
+
+_TwikitUser.__init__ = _defensive_user_init
 # ── パッチ終了 ──────────────────────────────────────────────────────
 
 import argparse
@@ -336,12 +379,27 @@ def extract_tweet_id(tweet) -> str | None:
     return None
 
 
+async def get_own_user_id(client: TwikitClient) -> str | None:
+    """自分のuser_idを取得。twid Cookie優先（API呼び出し不要・CF回避）"""
+    twid = (client.get_cookies() or {}).get('twid', '')
+    m = re.search(r'(\d{5,})', twid.replace('%3D', '='))
+    if m:
+        return m.group(1)
+    try:
+        return await client.user_id()
+    except Exception as e:
+        print(f"  ⚠️ user_id取得失敗: {str(e)[:100]}")
+        return None
+
+
 async def resolve_tweet_id_from_timeline(client: TwikitClient, text: str,
                                          max_pages: int = 2) -> str | None:
     """投稿直後にIDが取れなかった場合、自分の直近ツイートを本文照合して回収"""
     try:
-        me = await client.user()
-        tweets = await client.get_user_tweets(me.id, 'Tweets', count=20)
+        user_id = await get_own_user_id(client)
+        if not user_id:
+            return None
+        tweets = await client.get_user_tweets(user_id, 'Tweets', count=20)
         target = _norm_tweet_text(text)[:40]
         if not target:
             return None
@@ -644,9 +702,12 @@ async def backfill_tweet_ids(service, client: TwikitClient,
     oldest_needed = min(t["scheduled"] for t in targets) - timedelta(days=2)
 
     # タイムライン収集
-    me = await client.user()
+    user_id = await get_own_user_id(client)
+    if not user_id:
+        print("❌ 自分のuser_idが特定できずバックフィル不可")
+        return
     timeline = []
-    tweets = await client.get_user_tweets(me.id, 'Tweets', count=40)
+    tweets = await client.get_user_tweets(user_id, 'Tweets', count=40)
     for page in range(max_pages):
         if not tweets:
             break
