@@ -160,11 +160,9 @@ jobs:
             python scripts/save_google_token.py
           fi
 
-      - name: Trigger Auto Post check (redundant safety net)
-        if: success()
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || github.token }}
-        run: gh workflow run auto-post-instagram.yml --repo kueritikx-oss/instagram-insights-sync 2>/dev/null || echo "⚠️ Auto Post trigger skipped"
+      # (2026-07-11削除) 旧・副系Auto Post dispatch: 投稿はauto-post-all.yml(90分毎)に一本化済み。
+      # 廃止済みauto-post-instagram.ymlをここから叩くと二重エンジン+Actions分数浪費になるため撤去。
+      # 復旧系はCloud Sentinelのself-heal(auto-post-all対象)が担う。
 
       # ====== Healthchecks.io Dead-man's switch ======
       - name: Healthcheck ping (success)
