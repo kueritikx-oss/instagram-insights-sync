@@ -729,7 +729,7 @@ def main():
     # 全データ取得（1日後 + 1週間後 + メタデータ）
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
-        range=f"'{SHEET_NAME}'!A4:CT220",
+        range=f"'{SHEET_NAME}'!A4:CT500",  # 2026-07-10: e1dd06a(220→500行)の直し漏れ。220のままだと行221以降の投稿に考察が永久生成されない
     ).execute()
     raw_rows = result.get("values", [])
     print(f"📊 {len(raw_rows)}行を読み込み")
