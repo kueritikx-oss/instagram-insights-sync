@@ -265,12 +265,18 @@ if __name__ == "__main__":
 
     BASE_DIR = Path.home() / "Projects" / "事業"
     TOKEN_FILE = BASE_DIR / "タッキー/02_SNS集客/instagram-auto-post/token.json"
+    SA_FILE = BASE_DIR / "タッキー/02_SNS集客/instagram-dashboard/service_account_key.json"
     SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
     SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 
-    creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
-    if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+    # 2026-07-11: Service Account優先(失効しない)。旧OAuth token.jsonはinvalid_grantで引退済み。
+    if SA_FILE.exists() and not os.environ.get("SKIP_SERVICE_ACCOUNT"):
+        from google.oauth2 import service_account
+        creds = service_account.Credentials.from_service_account_file(str(SA_FILE), scopes=SCOPES)
+    else:
+        creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
     service = build_service("sheets", "v4", credentials=creds)
 
     col = load_column_map(service, SHEET_ID)
