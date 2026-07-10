@@ -374,6 +374,15 @@ def get_existing_dates(sheets_service, sheet_id: str, tab_name: str) -> set:
 
 # ========== Instagram API ==========
 
+# API呼び出し失敗の記録（全指標0埋め防止ガード用）
+# fetch系は従来どおり None/{} を返すが、失敗内容をここに残す。
+_API_ERRORS: List[str] = []
+
+
+def _record_api_error(metric: str, detail: str) -> None:
+    _API_ERRORS.append(f"{metric}: {detail[:200]}")
+
+
 def fetch_with_breakdown(
     access_token: str, ig_user_id: str,
     metric: str, breakdown: str, since_ts: int, until_ts: int,
@@ -388,6 +397,7 @@ def fetch_with_breakdown(
     try:
         r = requests.get(url, params=params, timeout=30)
         if r.status_code != 200:
+            _record_api_error(metric, f"HTTP {r.status_code}: {r.text[:150]}")
             return result
         for item in r.json().get("data", []):
             for bd in item.get("total_value", {}).get("breakdowns", []):
@@ -395,8 +405,8 @@ def fetch_with_breakdown(
                     dims = entry.get("dimension_values", [])
                     if dims:
                         result[dims[0]] = entry.get("value", 0)
-    except requests.RequestException:
-        pass
+    except requests.RequestException as e:
+        _record_api_error(metric, str(e))
     return result
 
 
@@ -412,11 +422,12 @@ def fetch_simple(
     try:
         r = requests.get(url, params=params, timeout=30)
         if r.status_code != 200:
+            _record_api_error(metric, f"HTTP {r.status_code}: {r.text[:150]}")
             return None
         for item in r.json().get("data", []):
             return item.get("total_value", {}).get("value", 0)
-    except requests.RequestException:
-        pass
+    except requests.RequestException as e:
+        _record_api_error(metric, str(e))
     return None
 
 
@@ -429,10 +440,11 @@ def fetch_follower_count(
     try:
         r = requests.get(url, params=params, timeout=30)
         if r.status_code != 200:
+            _record_api_error("followers_count", f"HTTP {r.status_code}: {r.text[:150]}")
             return None
         return r.json().get("followers_count", 0)
-    except requests.RequestException:
-        pass
+    except requests.RequestException as e:
+        _record_api_error("followers_count", str(e))
     return None
 
 
@@ -449,6 +461,7 @@ def fetch_demographics(
     try:
         r = requests.get(url, params=params, timeout=30)
         if r.status_code != 200:
+            _record_api_error(f"{metric}({breakdown})", f"HTTP {r.status_code}: {r.text[:150]}")
             return result
         for item in r.json().get("data", []):
             for bd in item.get("total_value", {}).get("breakdowns", []):
@@ -456,8 +469,8 @@ def fetch_demographics(
                     dims = entry.get("dimension_values", [])
                     if dims:
                         result[dims[0]] = entry.get("value", 0)
-    except requests.RequestException:
-        pass
+    except requests.RequestException as e:
+        _record_api_error(f"{metric}({breakdown})", str(e))
     return result
 
 
@@ -472,6 +485,7 @@ def collect_daily_data(
     until_ts = int((day_start + timedelta(days=1)).astimezone(timezone.utc).timestamp())
     date_str = target_date.strftime("%Y-%m-%d")
 
+    errors_before = len(_API_ERRORS)
     print(f"  {date_str}: ", end="", flush=True)
 
     # reach (follow_type)
@@ -525,6 +539,12 @@ def collect_daily_data(
 
     return {
         "date_str": date_str,
+        # ── 内部フラグ（シートには書かない）──
+        # _api_errors: この日の取得中に発生したAPIエラー数（全ゼロ書き込み防止ガード用）
+        # _follows_data_missing: follows_and_unfollows が空データセット
+        #   （2026-06-01頃からMeta側がHTTP 200+空resultsを返す。0埋め防止+差分フォールバック用）
+        "_api_errors": len(_API_ERRORS) - errors_before,
+        "_follows_data_missing": not follows_bd,
         "reach_total": reach_total,
         "reach_follower": reach_follower,
         "reach_non_follower": reach_non_follower,
@@ -561,6 +581,52 @@ def collect_daily_data(
     }
 
 
+def main_metrics_all_zero(data: Dict[str, Any]) -> bool:
+    """主要指標が全て0/Noneか判定（APIエラー時の0埋め書き込み防止用）"""
+    return not any([
+        data.get("reach_total"),
+        data.get("views_total"),
+        data.get("follower_count"),
+        data.get("accounts_engaged"),
+    ])
+
+
+def fetch_prev_follower_count(sheets_service, target_date: datetime) -> Optional[int]:
+    """詳細日次タブ(IG_account_daily_2026)から前日のfollower_countを取得。
+    follows_and_unfollows APIが空を返す時の follows_net 差分フォールバック用。"""
+    prev_str = (target_date - timedelta(days=1)).strftime("%Y-%m-%d")
+    try:
+        resp = sheets_service.spreadsheets().values().get(
+            spreadsheetId=POSTDATA_SHEET_ID, range=f"'{DETAIL_DAILY_TAB}'!A:K",
+        ).execute()
+    except Exception:
+        return None
+    for row in reversed(resp.get("values", [])):
+        if row and str(row[0]).strip() == prev_str and len(row) > 10:
+            try:
+                return int(str(row[10]).replace(",", "").strip())
+            except ValueError:
+                return None
+    return None
+
+
+def apply_follows_fallback(sheets_service, data: Dict[str, Any], target_date: datetime) -> None:
+    """follows_and_unfollows が空データセットの場合、
+    前日のfollower_countとの差分で follows_net を推定する。
+    (2026-06-01頃からMeta APIがこのmetricだけHTTP 200+空resultsを返すようになったため)
+    follows/unfollows の内訳は推定不能なので触らない。"""
+    if not data.get("_follows_data_missing"):
+        return
+    prev = fetch_prev_follower_count(sheets_service, target_date)
+    if prev is not None and prev > 0 and data.get("follower_count"):
+        data["follows_net"] = data["follower_count"] - prev
+        data["_follows_net_estimated"] = True
+        print(f"    ℹ️ follows API空 → follower_count差分で純増を推定: "
+              f"{data['follower_count']:,} - {prev:,} = {data['follows_net']:+d}")
+    else:
+        print(f"    ⚠️ follows API空 + 前日follower_count不明 → フォロー増減は書き込まない", file=sys.stderr)
+
+
 # ========== 既存シートへの書き込み ==========
 
 def write_to_daily_sheet(sheets_service, target_date: datetime, data: Dict[str, Any]) -> bool:
@@ -571,6 +637,17 @@ def write_to_daily_sheet(sheets_service, target_date: datetime, data: Dict[str, 
         date_str = format_daily_date(target_date)
         print(f"    ⚠️ 日ごとデータ: 行が見つかりません ({date_str}) — A列の日付生成が必要", file=sys.stderr)
         return False
+
+    if data.get("_follows_data_missing"):
+        # APIがデータを返していない → 偽の0で埋めない
+        if data.get("_follows_net_estimated"):
+            # 純増だけ差分推定で書く（増加/減少の内訳は不明のまま残す）
+            updates = [(DAILY_COL_FOLLOW_NET, data["follows_net"])]
+            update_cells(sheets_service, DAILY_SHEET_ID, DAILY_TAB_NAME, row, updates)
+            print(f"    → 日ごとデータ Row {row}: 純増のみ更新（推定 {data['follows_net']:+d}・増減内訳はAPI空のためスキップ）")
+        else:
+            print(f"    ⚠️ 日ごとデータ Row {row}: follows API空+推定不能 → E-G列は書き込まずスキップ", file=sys.stderr)
+        return True
 
     updates = [
         (DAILY_COL_FOLLOW_NET, data["follows_net"]),
@@ -660,11 +737,21 @@ def write_to_weekly_sheet(
 
 def write_to_detail_daily(sheets_service, data: Dict[str, Any]) -> None:
     """詳細日次タブに書き込み"""
+    # follows APIが空データセットの場合、偽の0ではなく空セルにする
+    # （純増だけは差分推定できていれば書く）
+    if data.get("_follows_data_missing"):
+        follows_out = ""
+        unfollows_out = ""
+        follows_net_out = data["follows_net"] if data.get("_follows_net_estimated") else ""
+    else:
+        follows_out = data["follows"]
+        unfollows_out = data["unfollows"]
+        follows_net_out = data["follows_net"]
     row_data = [
         data["date_str"],
         data["reach_total"], data["reach_follower"], data["reach_non_follower"],
         data["views_total"], data["views_follower"], data["views_non_follower"],
-        data["follows"], data["unfollows"], data["follows_net"], data["follower_count"],
+        follows_out, unfollows_out, follows_net_out, data["follower_count"],
         data["accounts_engaged"],
         data["interactions_feed"], data["interactions_reels"], data["interactions_story"],
         data["likes_feed"], data["likes_reels"],
@@ -746,6 +833,7 @@ def main() -> None:
     written = 0
     skipped = 0
     daily_write_failed = 0  # 日ごとデータ書き込み失敗数
+    api_zero_skipped = 0    # APIエラー+全ゼロで書き込みを見送った日数
 
     for i in range(args.days):
         target = target_base - timedelta(days=i)
@@ -757,6 +845,17 @@ def main() -> None:
             continue
 
         data = collect_daily_data(access_token, ig_user_id, target)
+
+        # ガード: 主要指標が全て0 かつ APIエラーあり → 偽の0を書かずスキップ
+        # （0で埋めると既存の重複チェック/欠損チェックで永久スキップされ修復不能になる）
+        if data.get("_api_errors") and main_metrics_all_zero(data):
+            print(f"    🔴 {date_str}: APIエラー {data['_api_errors']} 件 + 主要指標全ゼロ → 書き込みスキップ", file=sys.stderr)
+            for err in _API_ERRORS[-data["_api_errors"]:]:
+                print(f"       - {err}", file=sys.stderr)
+            api_zero_skipped += 1
+            continue
+
+        apply_follows_fallback(sheets_service, data, target)
         daily_results.append(data)
 
         # 1. 日ごとデータ（既存）に書き込み
@@ -781,6 +880,11 @@ def main() -> None:
                 print(f"  バックフィル中: {date_str}")
                 try:
                     data = collect_daily_data(access_token, ig_user_id, target)
+                    if data.get("_api_errors") and main_metrics_all_zero(data):
+                        print(f"    🔴 {date_str}: APIエラー + 主要指標全ゼロ → バックフィル見送り", file=sys.stderr)
+                        api_zero_skipped += 1
+                        continue
+                    apply_follows_fallback(sheets_service, data, target)
                     if write_to_daily_sheet(sheets_service, target, data):
                         backfilled += 1
                     else:
@@ -870,7 +974,14 @@ def main() -> None:
     if args.weekly:
         print(f"  ✅ 詳細週次 — デモグラフィック（IG_account_weekly_2026）")
 
-    # 異常検知: 日ごとデータ書き込み失敗が1件以上あれば exit 2
+    # 異常検知1: APIエラー+全ゼロで書き込みを見送った日があれば exit 1
+    # （偽の0を書かない代わりに、workflowを失敗させて可視化する）
+    if api_zero_skipped > 0:
+        print(f"\n🔴 警告: APIエラーにより主要指標が全ゼロの日 {api_zero_skipped} 日 → 書き込みスキップ。", file=sys.stderr)
+        print(f"     トークン失効・権限・Meta障害の可能性あり。後日 --date/--backfill-days で再取得可能。", file=sys.stderr)
+        sys.exit(1)
+
+    # 異常検知2: 日ごとデータ書き込み失敗が1件以上あれば exit 2
     # ワークフロー側で if: failure() を発動してDiscord通知させるため
     if daily_write_failed > 0:
         print(f"\n🔴 警告: 日ごとデータ書き込み失敗 {daily_write_failed} 件。", file=sys.stderr)
