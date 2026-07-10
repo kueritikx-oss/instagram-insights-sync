@@ -293,6 +293,71 @@ async def twikit_post_tweet(client: TwikitClient, text: str,
             raise
 
 
+# ── tweet_id 抽出・照合フォールバック ────────────────────────────────
+#
+# twikit の create_tweet は内部で tweet_from_data() を通すが、Xの
+# GraphQL応答形式が変わる/最小応答になると None や id 欠落の Tweet を
+# 返すことがある（tweet.py: 'result'/'core'/'legacy' 欠落で return None）。
+# 投稿自体は成功しているのに tweet_id が書き戻されない不全を防ぐため、
+# ① 応答オブジェクトから多段でIDを抽出し、
+# ② 取れない場合は自分のタイムラインを本文照合してIDを回収する。
+
+X_SCREEN_NAME = "tackey_clear"
+_TWEET_EPOCH_MS = 1288834974657  # X snowflake epoch
+
+
+def snowflake_to_datetime(tweet_id) -> datetime | None:
+    """tweet_id(snowflake)から投稿日時(JST)を復元"""
+    try:
+        ts_ms = (int(tweet_id) >> 22) + _TWEET_EPOCH_MS
+        return datetime.fromtimestamp(ts_ms / 1000, tz=JST)
+    except (ValueError, TypeError):
+        return None
+
+
+def _norm_tweet_text(text: str) -> str:
+    """照合用に正規化: URL(t.co含む)除去 + 空白全除去"""
+    text = re.sub(r'https?://\S+', '', text or '')
+    return re.sub(r'\s+', '', text)
+
+
+def extract_tweet_id(tweet) -> str | None:
+    """twikit応答からtweet_idを多段抽出。取れなければNone"""
+    if tweet is None:
+        return None
+    tid = getattr(tweet, 'id', None)
+    if tid:
+        return str(tid)
+    # 生データからの救済 (Tweetオブジェクトのid欠落ケース)
+    data = getattr(tweet, '_data', None) or {}
+    for key in ('rest_id', 'id_str', 'id'):
+        if isinstance(data, dict) and data.get(key):
+            return str(data[key])
+    return None
+
+
+async def resolve_tweet_id_from_timeline(client: TwikitClient, text: str,
+                                         max_pages: int = 2) -> str | None:
+    """投稿直後にIDが取れなかった場合、自分の直近ツイートを本文照合して回収"""
+    try:
+        me = await client.user()
+        tweets = await client.get_user_tweets(me.id, 'Tweets', count=20)
+        target = _norm_tweet_text(text)[:40]
+        if not target:
+            return None
+        for _ in range(max_pages):
+            for tw in tweets:
+                body = getattr(tw, 'full_text', None) or getattr(tw, 'text', '') or ''
+                if _norm_tweet_text(body)[:40] == target:
+                    return str(tw.id)
+            tweets = await tweets.next()
+            if not tweets:
+                break
+    except Exception as e:
+        print(f"  ⚠️ タイムライン照合失敗: {str(e)[:100]}")
+    return None
+
+
 # ── スケジュール判定 ──────────────────────────────────────────────────
 
 def parse_schedule_time(date_str, time_str):
@@ -435,15 +500,31 @@ async def execute_post(service, client: TwikitClient, post_info,
 
         # ツイート投稿
         tweet = await twikit_post_tweet(client, text, media_ids=media_ids)
-        tweet_id = tweet.id
-        tweet_url = f"https://x.com/tackey_clear/status/{tweet_id}"
+
+        # tweet_id 抽出（応答形式変化でid欠落 → タイムライン照合で回収）
+        tweet_id = extract_tweet_id(tweet)
+        if not tweet_id:
+            print(f"  ⚠️ 応答からtweet_id取得失敗 → タイムライン照合中...")
+            await asyncio.sleep(5)  # 反映待ち
+            tweet_id = await resolve_tweet_id_from_timeline(client, text)
+
+        if tweet_id:
+            tweet_url = f"https://x.com/{X_SCREEN_NAME}/status/{tweet_id}"
+            error_note = ""
+        else:
+            # 投稿自体は成功している（create_tweetが例外を出していない）ので
+            # postedにするが、ID欠落を必ずエラー欄に残して黙殺しない
+            tweet_id = ""
+            tweet_url = f"https://x.com/{X_SCREEN_NAME}"
+            error_note = "[id-missing] 投稿成功だがtweet_id取得失敗。--backfill-ids で回収可"
+            print(f"  ⚠️ tweet_id回収失敗（投稿は成功）: {post_num}")
 
         # 成功更新
         batch_update_cells(service, [
             (row, COL_STATUS, "posted"),
             (row, COL_TWEET_ID, str(tweet_id)),
             (row, COL_LAST_ATTEMPT, now_str),
-            (row, COL_ERROR, ""),
+            (row, COL_ERROR, error_note),
         ])
         update_cell(service, row, COL_URL, tweet_url)
 
@@ -518,6 +599,105 @@ async def execute_post(service, client: TwikitClient, post_info,
         return False
 
 
+async def backfill_tweet_ids(service, client: TwikitClient,
+                             max_pages: int = 40, dry_run: bool = False):
+    """postedなのにtweet_id(O列)が空/URL(H列)にstatus IDが無い行を、
+    自分のタイムラインとの本文照合でバックフィルする。
+
+    誤ID防止:
+      - 同一本文が複数回投稿されるケースがあるため、snowflake復元時刻と
+        スケジュール日時の差が36時間以内の候補だけ採用（最近接優先）
+      - 既にシート上の他行で使われているtweet_idは割り当てない
+    """
+    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    used_ids = set()
+    targets = []
+    for i, row in enumerate(rows):
+        actual_row = DATA_START_ROW + i
+        status = get_col_value(row, COL_STATUS)
+        tid = get_col_value(row, COL_TWEET_ID)
+        if tid:
+            used_ids.add(tid)
+        if status != "posted":
+            continue
+        url = get_col_value(row, COL_URL)
+        if tid and "/status/" in url:
+            continue
+        body = get_col_value(row, COL_BODY) or get_col_value(row, COL_HOOK)
+        scheduled = parse_schedule_time(get_col_value(row, COL_DATE),
+                                        get_col_value(row, COL_TIME))
+        if not body or not scheduled:
+            continue
+        targets.append({
+            "row": actual_row,
+            "post_num": get_col_value(row, COL_POST_NUM),
+            "norm": _norm_tweet_text(body)[:40],
+            "scheduled": scheduled,
+            "has_id": bool(tid),
+        })
+
+    if not targets:
+        print("📭 バックフィル対象なし")
+        return
+
+    print(f"📋 バックフィル対象: {len(targets)}件")
+    oldest_needed = min(t["scheduled"] for t in targets) - timedelta(days=2)
+
+    # タイムライン収集
+    me = await client.user()
+    timeline = []
+    tweets = await client.get_user_tweets(me.id, 'Tweets', count=40)
+    for page in range(max_pages):
+        if not tweets:
+            break
+        oldest_in_page = None
+        for tw in tweets:
+            tid = str(tw.id)
+            created = snowflake_to_datetime(tid)
+            body = getattr(tw, 'full_text', None) or getattr(tw, 'text', '') or ''
+            timeline.append({"id": tid, "norm": _norm_tweet_text(body)[:40],
+                             "created": created})
+            if created and (oldest_in_page is None or created < oldest_in_page):
+                oldest_in_page = created
+        if oldest_in_page and oldest_in_page < oldest_needed:
+            break
+        await asyncio.sleep(2)
+        tweets = await tweets.next()
+    print(f"   タイムライン収集: {len(timeline)}ツイート")
+
+    matched, unmatched = 0, []
+    for t in targets:
+        candidates = [
+            tw for tw in timeline
+            if tw["norm"] and tw["norm"] == t["norm"] and tw["created"]
+            and abs((tw["created"] - t["scheduled"]).total_seconds()) <= 36 * 3600
+            and tw["id"] not in used_ids
+        ]
+        if not candidates:
+            unmatched.append(t)
+            print(f"  ❓ {t['post_num']}: 照合候補なし")
+            continue
+        best = min(candidates,
+                   key=lambda tw: abs((tw["created"] - t["scheduled"]).total_seconds()))
+        used_ids.add(best["id"])
+        url = f"https://x.com/{X_SCREEN_NAME}/status/{best['id']}"
+        print(f"  ✅ {t['post_num']}: {best['id']} "
+              f"(投稿時刻 {best['created'].strftime('%Y-%m-%d %H:%M')})")
+        if not dry_run:
+            batch_update_cells(service, [
+                (t["row"], COL_TWEET_ID, best["id"]),
+            ])
+            update_cell(service, t["row"], COL_URL, url)
+        matched += 1
+
+    print()
+    print(f"🎉 バックフィル完了: {matched}/{len(targets)}件"
+          f"{' [DRY RUN]' if dry_run else ''}")
+    if unmatched:
+        print(f"⚠️ 未回収 {len(unmatched)}件: "
+              + ", ".join(t["post_num"] for t in unmatched))
+
+
 async def async_main(args):
     now = datetime.now(JST)
     print(f"🐦 X自動投稿 (twikit) - {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
@@ -531,6 +711,13 @@ async def async_main(args):
 
     # サービス初期化（Sheetsは常に必要。X認証は投稿対象がある時だけ行う）
     service = get_sheets_service()
+
+    # tweet_idバックフィルモード
+    if args.backfill_ids:
+        client = await get_twikit_client()
+        await backfill_tweet_ids(service, client, dry_run=args.dry_run)
+        save_cookies(client)
+        return
 
     # 日次投稿数チェック
     if not args.dry_run and not args.force:
@@ -586,6 +773,8 @@ def main():
     parser.add_argument("--window", type=int, default=45)
     parser.add_argument("--force", type=str, default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--backfill-ids", action="store_true",
+                        help="postedなのにtweet_id空の行をタイムライン照合で回収")
     args = parser.parse_args()
     asyncio.run(async_main(args))
 
