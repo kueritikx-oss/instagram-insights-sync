@@ -24,68 +24,186 @@ from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-import os as _os
-_auth_dir = _os.environ.get("INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR", "タッキー/02_SNS集客/instagram-auto-post")
-TOKEN_FILE = _os.path.join(_auth_dir, "token.json")
+from sheet_column_map import _find_section_range, col_letter
+
+import os
+_auth_dir = os.environ.get("INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR", "タッキー/02_SNS集客/instagram-auto-post")
+TOKEN_FILE = os.path.join(_auth_dir, "token.json")
 SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 SHEET_NAME = "Instagram投稿毎データ"
 
 # ── Column indices (0-based from A) ──
-COL_DATE = 0       # A: 日付
-COL_NUM = 2        # C: 番号
-COL_TIME = 3       # D: 時刻
-COL_TITLE = 4      # E: ファイル名
-COL_CTA = 5        # F: 投稿種別（CTA）
-COL_FORMAT = 6     # G: 形式
-COL_INTENT = 8     # I: 投稿の意図
-COL_CONTENT = 9    # J: 内容
-COL_CAPTION = 11   # L: キャプション
-COL_LF8 = 12       # M: LF8欲求
-COL_EMOTION = 13   # N: 感情トリガー
-COL_KPI = 14       # O: 成果指標
-COL_RESULT1 = 16   # Q: 結果①
-COL_RESULT2 = 17   # R: 結果②
-COL_RESULT3 = 18   # S: 結果③
-COL_RESULT4 = 19   # T: 結果④
-COL_ANALYSIS = 20  # U: 考察・仮説
-COL_NEXT = 21      # V: 次の投稿に活かすポイント
+# 🔴 起動時に resolve_columns(service) で行3ヘッダーから動的解決される。
+# 下の値は「解決失敗を検知するための初期値 None」。ハードコード列番号は廃止
+# （2026-06の列挿入で全列が-2ズレし、Q:V書き込みが別列を破壊していた再発防止）。
+COL_DATE = None       # A: 日付
+COL_NUM = None        # C: 番号
+COL_TIME = None       # D: 時刻
+COL_TITLE = None      # E: ファイル名
+COL_CTA = None        # F: 投稿種別（CTA）
+COL_FORMAT = None     # G: 形式/投稿目的
+COL_INTENT = None     # I: 投稿の意図
+COL_CONTENT = None    # J: 原稿（本文全文）
+COL_CAPTION = None    # N: キャプション
+COL_LF8 = None        # O: LF8欲求
+COL_EMOTION = None    # P: 感情トリガー
+COL_KPI = None        # Q: 成果指標メモ
+COL_RESULT1 = None    # S: 結果①（CTA平均との差）
+COL_RESULT2 = None    # T: 結果②（強み/課題）
+COL_RESULT3 = None    # U: 結果③（効率/成長）
+COL_RESULT4 = None    # V: 結果④（予備）
+COL_ANALYSIS = None   # W: 考察・仮説
+COL_NEXT = None       # X: 次投稿への示唆
 
 # 1日後データ
-COL_1D_REACH = 22      # W: リーチ全体
-COL_1D_REACH_FW = 23   # X: フォロワー
-COL_1D_REACH_NF = 24   # Y: フォロー外
-COL_1D_IMP = 25        # Z: インプレッション
-COL_1D_HOME = 27       # AB: ホーム
-COL_1D_HASHTAG = 28    # AC: ハッシュタグ
-COL_1D_DISCOVER = 29   # AD: 発見
-COL_1D_PLAYS = 31      # AF: 再生数
-COL_1D_AVG_WATCH = 35  # AJ: 平均再生時間
-COL_1D_ENG = 36        # AK: エンゲージメント全体
-COL_1D_LIKES = 39      # AN: いいね
-COL_1D_SAVES = 40      # AO: 保存
-COL_1D_COMMENTS = 41   # AP: コメント
-COL_1D_SHARES = 42     # AQ: シェア
-COL_1D_PROF = 43       # AR: プロフアクセス
-COL_1D_FOLLOW = 44     # AS: フォロー
-COL_1D_WEB = 45        # AT: ウェブタップ
-COL_1D_SAVE_RATE = 46  # AU: 保存率
-COL_1D_HOME_RATE = 47  # AV: ホーム率
-COL_1D_PROF_RATE = 48  # AW: プロフアクセス率
-COL_1D_FOLLOW_RATE = 49  # AX: フォロワー転換率
+COL_1D_REACH = None
+COL_1D_REACH_FW = None
+COL_1D_REACH_NF = None
+COL_1D_IMP = None
+COL_1D_HOME = None
+COL_1D_HASHTAG = None
+COL_1D_DISCOVER = None
+COL_1D_PLAYS = None
+COL_1D_AVG_WATCH = None
+COL_1D_ENG = None
+COL_1D_LIKES = None
+COL_1D_SAVES = None
+COL_1D_COMMENTS = None
+COL_1D_SHARES = None
+COL_1D_PROF = None
+COL_1D_FOLLOW = None
+COL_1D_WEB = None
+COL_1D_SAVE_RATE = None
+COL_1D_HOME_RATE = None
+COL_1D_PROF_RATE = None
+COL_1D_FOLLOW_RATE = None
 
 # 1週間後データ
-COL_7D_REACH = 51      # AZ: リーチ全体
-COL_7D_REACH_FW = 52   # BA: フォロワー
-COL_7D_REACH_NF = 53   # BB: フォロー外
-COL_7D_IMP = 54        # BC: インプレッション
-COL_7D_PLAYS = 61      # BJ: 再生数
-COL_7D_LIKES = 69      # BR: いいね
-COL_7D_SAVES = 70      # BS: 保存
-COL_7D_COMMENTS = 71   # BT: コメント
-COL_7D_SHARES = 72     # BU: シェア
-COL_7D_PROF = 73       # BV: プロフアクセス
-COL_7D_FOLLOW = 74     # BW: フォロー
-COL_7D_SAVE_RATE = 76  # BY: 保存率
+COL_7D_REACH = None
+COL_7D_REACH_FW = None
+COL_7D_REACH_NF = None
+COL_7D_IMP = None
+COL_7D_PLAYS = None
+COL_7D_LIKES = None
+COL_7D_SAVES = None
+COL_7D_COMMENTS = None
+COL_7D_SHARES = None
+COL_7D_PROF = None
+COL_7D_FOLLOW = None
+COL_7D_SAVE_RATE = None
+
+# 行1のセクションヘッダー（sheet_column_map.py と同じ規約）
+_SECTION_1DAY = "1日後データ"
+_SECTION_7DAY = "1週間後データ"
+
+# (変数名, 行3キーワード候補, 行1セクション制約, 何番目の一致か(1-based), 必須か)
+_COLUMN_SPECS = [
+    ("COL_DATE",       ("日付",),                         None, 1, True),
+    ("COL_NUM",        ("番号",),                         None, 1, True),
+    ("COL_TIME",       ("時刻",),                         None, 1, False),
+    ("COL_TITLE",      ("ファイル名",),                   None, 1, True),
+    ("COL_CTA",        ("投稿種別",),                     None, 1, True),
+    ("COL_FORMAT",     ("形式", "投稿目的"),              None, 1, True),
+    ("COL_INTENT",     ("投稿の意図",),                   None, 1, False),
+    ("COL_CONTENT",    ("原稿（本文全文）", "原稿", "内容"), None, 1, False),
+    ("COL_CAPTION",    ("キャプション",),                 None, 1, False),
+    ("COL_LF8",        ("LF8欲求", "LF8"),               None, 1, False),
+    ("COL_EMOTION",    ("感情トリガー",),                 None, 1, False),  # 先頭一致（分類タグ側にも同名あり）
+    ("COL_KPI",        ("成果指標メモ", "成果指標"),      None, 1, False),
+    # 書き込み先6列（絶対にズレてはいけない）
+    ("COL_RESULT1",    ("CTA平均との差", "結果①"),       None, 1, True),
+    ("COL_RESULT2",    ("強み/課題", "結果②"),           None, 1, True),
+    ("COL_RESULT3",    ("効率/成長", "結果③"),           None, 1, True),
+    ("COL_RESULT4",    ("予備", "結果④"),                None, 1, True),
+    ("COL_ANALYSIS",   ("考察・仮説",),                   None, 1, True),
+    ("COL_NEXT",       ("次投稿への示唆", "次の投稿に活かすポイント"), None, 1, True),
+    # 1日後データ
+    ("COL_1D_REACH",     ("全体",),                   _SECTION_1DAY, 1, True),
+    ("COL_1D_REACH_FW",  ("フォロワー",),             _SECTION_1DAY, 1, False),
+    ("COL_1D_REACH_NF",  ("フォロー外", "フォロワー以外"), _SECTION_1DAY, 1, False),
+    ("COL_1D_IMP",       ("インプレッション",),       _SECTION_1DAY, 1, False),
+    ("COL_1D_HOME",      ("ホーム",),                 _SECTION_1DAY, 1, False),
+    ("COL_1D_HASHTAG",   ("ハッシュタグ",),           _SECTION_1DAY, 1, False),
+    ("COL_1D_DISCOVER",  ("発見",),                   _SECTION_1DAY, 1, False),
+    ("COL_1D_PLAYS",     ("再生数",),                 _SECTION_1DAY, 1, False),
+    ("COL_1D_AVG_WATCH", ("平均再生時間",),           _SECTION_1DAY, 1, False),
+    ("COL_1D_ENG",       ("全体",),                   _SECTION_1DAY, 2, False),  # 2番目の「全体」
+    ("COL_1D_LIKES",     ("いいね",),                 _SECTION_1DAY, 1, True),
+    ("COL_1D_SAVES",     ("保存",),                   _SECTION_1DAY, 1, True),
+    ("COL_1D_COMMENTS",  ("コメント",),               _SECTION_1DAY, 1, True),
+    ("COL_1D_SHARES",    ("シェア",),                 _SECTION_1DAY, 1, True),
+    ("COL_1D_PROF",      ("プロフアクセス",),         _SECTION_1DAY, 1, True),
+    ("COL_1D_FOLLOW",    ("フォロー",),               _SECTION_1DAY, 1, True),
+    ("COL_1D_WEB",       ("ウェブタップ",),           _SECTION_1DAY, 1, False),
+    ("COL_1D_SAVE_RATE", ("保存率",),                 _SECTION_1DAY, 1, True),
+    ("COL_1D_HOME_RATE", ("ホーム率",),               _SECTION_1DAY, 1, False),
+    ("COL_1D_PROF_RATE", ("プロフアクセス率",),       _SECTION_1DAY, 1, False),
+    ("COL_1D_FOLLOW_RATE", ("フォロワー転換率", "フォロー率"), _SECTION_1DAY, 1, False),
+    # 1週間後データ
+    ("COL_7D_REACH",     ("全体",),                   _SECTION_7DAY, 1, True),
+    ("COL_7D_REACH_FW",  ("フォロワー",),             _SECTION_7DAY, 1, False),
+    ("COL_7D_REACH_NF",  ("フォロー外", "フォロワー以外"), _SECTION_7DAY, 1, False),
+    ("COL_7D_IMP",       ("インプレッション",),       _SECTION_7DAY, 1, False),
+    ("COL_7D_PLAYS",     ("再生回数", "再生数"),      _SECTION_7DAY, 1, False),
+    ("COL_7D_LIKES",     ("いいね",),                 _SECTION_7DAY, 1, True),
+    ("COL_7D_SAVES",     ("保存",),                   _SECTION_7DAY, 1, True),
+    ("COL_7D_COMMENTS",  ("コメント",),               _SECTION_7DAY, 1, False),
+    ("COL_7D_SHARES",    ("シェア",),                 _SECTION_7DAY, 1, False),
+    ("COL_7D_PROF",      ("プロフアクセス",),         _SECTION_7DAY, 1, True),
+    ("COL_7D_FOLLOW",    ("フォロー",),               _SECTION_7DAY, 1, True),
+    ("COL_7D_SAVE_RATE", ("保存率",),                 _SECTION_7DAY, 1, False),
+]
+
+
+def resolve_columns(service) -> None:
+    """行1(セクション)+行3(列名)ヘッダーを読み、COL_* を名前で動的解決する。
+
+    必須列が見つからない場合は即エラー終了（ズレたまま書き込むより安全）。
+    オプション列は None のままにし、cell() が "" を返す。
+    """
+    r = service.spreadsheets().values().get(
+        spreadsheetId=SHEET_ID,
+        range=f"'{SHEET_NAME}'!1:3",
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute()
+    header_rows = r.get("values", [])
+    if len(header_rows) < 3:
+        raise SystemExit(f"❌ ヘッダーが3行未満: {SHEET_NAME}")
+    row1, row3 = header_rows[0], header_rows[2]
+
+    resolved: Dict[str, Optional[int]] = {}
+    missing: List[str] = []
+    for var, keywords, section, nth, required in _COLUMN_SPECS:
+        if section:
+            start, end = _find_section_range(row1, section)
+        else:
+            start, end = 0, len(row3)
+        matches = [
+            i for i in range(start, min(end, len(row3)))
+            if str(row3[i]).strip() in keywords
+        ]
+        if len(matches) >= nth:
+            resolved[var] = matches[nth - 1]
+        elif required:
+            missing.append(f"{var}({'/'.join(keywords)})")
+        else:
+            resolved[var] = None
+
+    if missing:
+        raise SystemExit(
+            "❌ 必須列がヘッダーから見つかりません（列挿入/改名の可能性）:\n  "
+            + "\n  ".join(missing)
+        )
+
+    globals().update(resolved)
+
+    # 書き込み先6列は連続していることを検証（範囲書き込みの前提）
+    write_cols = [COL_RESULT1, COL_RESULT2, COL_RESULT3, COL_RESULT4, COL_ANALYSIS, COL_NEXT]
+    if write_cols != list(range(COL_RESULT1, COL_RESULT1 + 6)):
+        raise SystemExit(f"❌ 結果①〜次ポイントの6列が連続していません: {write_cols}")
+    print(f"🧭 列マップ解決: 結果①〜次={col_letter(COL_RESULT1)}:{col_letter(COL_NEXT)} "
+          f"リーチ1d={col_letter(COL_1D_REACH)} いいね1d={col_letter(COL_1D_LIKES)} "
+          f"保存1d={col_letter(COL_1D_SAVES)}")
 
 # ── Content category keywords ──
 CATEGORY_KEYWORDS = {
@@ -161,9 +279,9 @@ def safe_float(val: str) -> float:
         return 0.0
 
 
-def cell(row: list, idx: int) -> str:
-    """行からセル値を安全に取得"""
-    if idx < len(row):
+def cell(row: list, idx: Optional[int]) -> str:
+    """行からセル値を安全に取得（idx=None は未解決のオプション列 → 空文字）"""
+    if idx is not None and idx < len(row):
         return row[idx].strip() if isinstance(row[idx], str) else str(row[idx])
     return ""
 
@@ -726,6 +844,9 @@ def main():
 
     service = get_service()
 
+    # 列マッピングをヘッダーから動的解決（必須列が見つからなければここで停止）
+    resolve_columns(service)
+
     # 全データ取得（1日後 + 1週間後 + メタデータ）
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
@@ -871,11 +992,11 @@ def main():
             print(f"  考察: {analysis}")
             print(f"  次: {next_action}")
 
-        # Q〜V列（index 16〜21）を更新
+        # 結果①〜次ポイントの連続6列（ヘッダー解決済み・resolve_columnsで連続性検証済み）を更新
         update_values = [r1, r2, r3, r4, analysis, next_action]
 
         updates.append({
-            "range": f"'{SHEET_NAME}'!Q{p['row_idx']}:V{p['row_idx']}",
+            "range": f"'{SHEET_NAME}'!{col_letter(COL_RESULT1)}{p['row_idx']}:{col_letter(COL_NEXT)}{p['row_idx']}",
             "majorDimension": "ROWS",
             "values": [update_values],
         })

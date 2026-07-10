@@ -62,46 +62,149 @@ EXPERIMENT_SHEET_NAME = "実験管理"
 DATA_START_ROW = 4  # ヘッダーは1-3行
 
 # ── 列マッピング（0-based）──────────────────────────────────
-COL_DATE = 0        # A
-COL_NUM = 2         # C
-COL_TIME = 3        # D
-COL_TITLE = 4       # E
-COL_CTA = 5         # F: CTA種別（いいね/保存/フォロー/ウェブタップ/コメント）
-COL_FORMAT = 6      # G: 形式（認知/価値提供/誘導）
-COL_URL = 7         # H
-COL_INTENT = 8      # I
-COL_LF8 = 12        # M
-COL_EMOTION = 13    # N
-COL_RESULT1 = 16    # Q
-COL_ANALYSIS = 20   # U
-COL_NEXT = 21       # V
+# 🔴 起動時に resolve_post_columns(service) で行3ヘッダーから動的解決される。
+# ハードコード列番号は廃止（2026-06の列挿入で全列が-2ズレし、
+# 「考察・仮説」列をリーチとして読む等のサイレント破損が起きていた再発防止）。
+COL_DATE = None
+COL_NUM = None
+COL_TIME = None
+COL_TITLE = None
+COL_CTA = None       # 投稿種別（いいね/保存/フォロー/ウェブタップ/コメント）
+COL_FORMAT = None    # 形式/投稿目的（認知/価値提供/誘導）
+COL_URL = None
+COL_INTENT = None
+COL_LF8 = None
+COL_EMOTION = None
+COL_RESULT1 = None
+COL_ANALYSIS = None
+COL_NEXT = None
 
 # 1日後
-COL_1D_REACH = 22       # W
-COL_1D_REACH_FW = 23    # X
-COL_1D_REACH_NF = 24    # Y
-COL_1D_LIKES = 39       # AN
-COL_1D_SAVES = 40       # AO
-COL_1D_COMMENTS = 41    # AP
-COL_1D_SHARES = 42      # AQ
-COL_1D_PROF = 43        # AR
-COL_1D_FOLLOW = 44      # AS
-COL_1D_SAVE_RATE = 46   # AU
-COL_1D_PROF_RATE = 48   # AW
+COL_1D_REACH = None
+COL_1D_REACH_FW = None
+COL_1D_REACH_NF = None
+COL_1D_LIKES = None
+COL_1D_SAVES = None
+COL_1D_COMMENTS = None
+COL_1D_SHARES = None
+COL_1D_PROF = None
+COL_1D_FOLLOW = None
+COL_1D_SAVE_RATE = None
+COL_1D_PROF_RATE = None
 
 # 7日後
-COL_7D_REACH = 51       # AZ
-COL_7D_REACH_NF = 53    # BB
-COL_7D_LIKES = 69       # BR
-COL_7D_SAVES = 70       # BS
-COL_7D_COMMENTS = 71    # BT
-COL_7D_SHARES = 72      # BU
-COL_7D_PROF = 73        # BV
-COL_7D_FOLLOW = 74      # BW
-COL_7D_SAVE_RATE = 76   # BY
+COL_7D_REACH = None
+COL_7D_REACH_NF = None
+COL_7D_LIKES = None
+COL_7D_SAVES = None
+COL_7D_COMMENTS = None
+COL_7D_SHARES = None
+COL_7D_PROF = None
+COL_7D_FOLLOW = None
+COL_7D_SAVE_RATE = None
 
 # テーマ
-COL_BIG_CATEGORY = 86   # CI
+COL_BIG_CATEGORY = None  # 大分類
+
+# 行1のセクションヘッダー（sheet_column_map.py と同じ規約）
+_SECTION_1DAY = "1日後データ"
+_SECTION_7DAY = "1週間後データ"
+
+# (変数名, 行3キーワード候補, 行1セクション制約, 何番目の一致か(1-based), 必須か)
+_POST_COLUMN_SPECS = [
+    ("COL_DATE",       ("日付",),                None, 1, True),
+    ("COL_NUM",        ("番号",),                None, 1, True),
+    ("COL_TIME",       ("時刻",),                None, 1, False),
+    ("COL_TITLE",      ("ファイル名",),          None, 1, True),
+    ("COL_CTA",        ("投稿種別",),            None, 1, True),
+    ("COL_FORMAT",     ("形式", "投稿目的"),     None, 1, True),
+    ("COL_URL",        ("URL",),                 None, 1, True),
+    ("COL_INTENT",     ("投稿の意図",),          None, 1, False),
+    ("COL_LF8",        ("LF8欲求", "LF8"),      None, 1, False),
+    ("COL_EMOTION",    ("感情トリガー",),        None, 1, False),  # 先頭一致（分類タグ側にも同名あり）
+    ("COL_RESULT1",    ("CTA平均との差", "結果①"), None, 1, False),
+    ("COL_ANALYSIS",   ("考察・仮説",),          None, 1, False),
+    ("COL_NEXT",       ("次投稿への示唆", "次の投稿に活かすポイント"), None, 1, False),
+    # 1日後データ
+    ("COL_1D_REACH",     ("全体",),               _SECTION_1DAY, 1, True),
+    ("COL_1D_REACH_FW",  ("フォロワー",),         _SECTION_1DAY, 1, False),
+    ("COL_1D_REACH_NF",  ("フォロー外", "フォロワー以外"), _SECTION_1DAY, 1, False),
+    ("COL_1D_LIKES",     ("いいね",),             _SECTION_1DAY, 1, True),
+    ("COL_1D_SAVES",     ("保存",),               _SECTION_1DAY, 1, True),
+    ("COL_1D_COMMENTS",  ("コメント",),           _SECTION_1DAY, 1, True),
+    ("COL_1D_SHARES",    ("シェア",),             _SECTION_1DAY, 1, True),
+    ("COL_1D_PROF",      ("プロフアクセス",),     _SECTION_1DAY, 1, True),
+    ("COL_1D_FOLLOW",    ("フォロー",),           _SECTION_1DAY, 1, True),
+    ("COL_1D_SAVE_RATE", ("保存率",),             _SECTION_1DAY, 1, False),
+    ("COL_1D_PROF_RATE", ("プロフアクセス率",),   _SECTION_1DAY, 1, False),
+    # 1週間後データ
+    ("COL_7D_REACH",     ("全体",),               _SECTION_7DAY, 1, True),
+    ("COL_7D_REACH_NF",  ("フォロー外", "フォロワー以外"), _SECTION_7DAY, 1, False),
+    ("COL_7D_LIKES",     ("いいね",),             _SECTION_7DAY, 1, True),
+    ("COL_7D_SAVES",     ("保存",),               _SECTION_7DAY, 1, True),
+    ("COL_7D_COMMENTS",  ("コメント",),           _SECTION_7DAY, 1, False),
+    ("COL_7D_SHARES",    ("シェア",),             _SECTION_7DAY, 1, False),
+    ("COL_7D_PROF",      ("プロフアクセス",),     _SECTION_7DAY, 1, True),
+    ("COL_7D_FOLLOW",    ("フォロー",),           _SECTION_7DAY, 1, True),
+    ("COL_7D_SAVE_RATE", ("保存率",),             _SECTION_7DAY, 1, False),
+    # テーマ（分類タグ）
+    ("COL_BIG_CATEGORY", ("大分類",),             None, 1, False),
+]
+
+_post_columns_resolved = False
+
+
+def resolve_post_columns(service) -> None:
+    """行1(セクション)+行3(列名)ヘッダーを読み、COL_* を名前で動的解決する。
+
+    必須列が見つからない場合は即エラー終了（ズレた列を読むより安全）。
+    オプション列は None のままにし、cell() が "" を返す。
+    """
+    global _post_columns_resolved
+    if _post_columns_resolved:
+        return
+
+    from sheet_column_map import _find_section_range, col_letter
+
+    r = service.spreadsheets().values().get(
+        spreadsheetId=POSTDATA_SHEET_ID,
+        range=f"'{POSTDATA_SHEET_NAME}'!1:3",
+        valueRenderOption="FORMATTED_VALUE",
+    ).execute()
+    header_rows = r.get("values", [])
+    if len(header_rows) < 3:
+        raise SystemExit(f"❌ ヘッダーが3行未満: {POSTDATA_SHEET_NAME}")
+    row1, row3 = header_rows[0], header_rows[2]
+
+    resolved: Dict[str, Optional[int]] = {}
+    missing: List[str] = []
+    for var, keywords, section, nth, required in _POST_COLUMN_SPECS:
+        if section:
+            start, end = _find_section_range(row1, section)
+        else:
+            start, end = 0, len(row3)
+        matches = [
+            i for i in range(start, min(end, len(row3)))
+            if str(row3[i]).strip() in keywords
+        ]
+        if len(matches) >= nth:
+            resolved[var] = matches[nth - 1]
+        elif required:
+            missing.append(f"{var}({'/'.join(keywords)})")
+        else:
+            resolved[var] = None
+
+    if missing:
+        raise SystemExit(
+            "❌ 必須列がヘッダーから見つかりません（列挿入/改名の可能性）:\n  "
+            + "\n  ".join(missing)
+        )
+
+    globals().update(resolved)
+    _post_columns_resolved = True
+    print(f"🧭 列マップ解決: リーチ1d={col_letter(COL_1D_REACH)} "
+          f"いいね1d={col_letter(COL_1D_LIKES)} 保存1d={col_letter(COL_1D_SAVES)} "
+          f"リーチ7d={col_letter(COL_7D_REACH)}")
 
 # 週ごとデータ列
 WCOL_REACH_TOTAL = 18   # S
@@ -193,8 +296,8 @@ def safe_float(val) -> float:
         return 0.0
 
 
-def cell(row: list, idx: int) -> str:
-    if idx < len(row):
+def cell(row: list, idx: Optional[int]) -> str:
+    if idx is not None and idx < len(row):
         v = row[idx]
         return v.strip() if isinstance(v, str) else str(v)
     return ""
@@ -272,6 +375,8 @@ def evergreen_score(post: dict) -> Optional[float]:
 
 # ── データ読み取り ─────────────────────────────────────────
 def read_all_posts(service) -> List[dict]:
+    # 列マッピングをヘッダーから動的解決（必須列が見つからなければここで停止）
+    resolve_post_columns(service)
     result = service.spreadsheets().values().get(
         spreadsheetId=POSTDATA_SHEET_ID,
         range=f"'{POSTDATA_SHEET_NAME}'!A{DATA_START_ROW}:CT",
