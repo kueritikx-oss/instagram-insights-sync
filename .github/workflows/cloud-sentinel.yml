@@ -168,10 +168,14 @@ jobs:
                           for r in posted_rows:
                               dv = cell(r, col_date)
                               try:
-                                  m, d = dv.replace("月", "/").replace("日", "").split("/")[:2]
-                                  dt = datetime.datetime(now_jst.year, int(m), int(d), tzinfo=jst)
-                                  if dt > now_jst + datetime.timedelta(days=2):
-                                      dt = dt.replace(year=now_jst.year - 1)  # 年跨ぎ補正
+                                  if "-" in dv:  # ISO形式 2026-07-10 (Xシートの実形式)
+                                      y, m, d = dv.split("-")[:3]
+                                      dt = datetime.datetime(int(y), int(m), int(d), tzinfo=jst)
+                                  else:  # 7/10 or 7月10日
+                                      m, d = dv.replace("月", "/").replace("日", "").split("/")[:2]
+                                      dt = datetime.datetime(now_jst.year, int(m), int(d), tzinfo=jst)
+                                      if dt > now_jst + datetime.timedelta(days=2):
+                                          dt = dt.replace(year=now_jst.year - 1)  # 年跨ぎ補正
                                   tv = cell(r, col_time)
                                   if ":" in tv:
                                       hh, mm = tv.split(":")[:2]
