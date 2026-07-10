@@ -103,6 +103,7 @@ SHEET_READ_END_COL = _col_idx_to_letter(_MAX_COL_IDX)  # 現在: AU（46）
 
 # 制限・設定
 MAX_RETRIES = 3
+MAX_TRANSIENT_RETRIES = 12  # transientエラーは次のcronサイクルで再試行（IG版 cloud_auto_post.py と同一設計）
 CONTAINER_POLL_MAX_SEC = 120  # コンテナ処理待ち最大秒
 CONTAINER_POLL_INTERVAL = 5   # ポーリング間隔（秒）
 POST_GAP_SECONDS = 30         # 投稿間のクールダウン
@@ -707,18 +708,42 @@ def execute_post(service, token: str, user_id: str, post_info: dict,
 
     except Exception as e:
         error_msg = str(e)[:500]
+        # リトライ回数は AT列(COL_RETRY) から読む（旧実装は COL_ERROR-1=AR列を誤読していた）
         retry_count = 0
         try:
-            retry_count = int(get_col_value(data, COL_ERROR - 1) or "0")
+            retry_count = int(get_col_value(data, COL_RETRY) or "0")
         except (ValueError, IndexError):
             pass
-
         retry_count += 1
-        new_status = "retry" if retry_count < MAX_RETRIES else "failed"
+
+        # transientエラー分類（IG版 cloud_auto_post.py:1036 / X版 cloud_auto_post_x.py:488 と同等）
+        is_transient = (
+            '"is_transient":true' in error_msg
+            or '"is_transient": true' in error_msg
+            or any(kw in error_msg for kw in (
+                "Rate limit", "Too Many", "(#429)", "Connection", "Timeout", "timed out",
+                "temporarily unavailable", "Service Unavailable", "An unknown error occurred",
+            ))
+        )
+
+        if is_transient:
+            # transient: readyに戻して次のcronサイクルで自動復帰（上限 MAX_TRANSIENT_RETRIES）
+            if retry_count < MAX_TRANSIENT_RETRIES:
+                new_status = "ready"
+                print(f"  ⚡ transient: {post_num} → ready (attempt {retry_count}/{MAX_TRANSIENT_RETRIES})")
+            else:
+                new_status = "failed"
+                print(f"  ✗ transientエラーが{MAX_TRANSIENT_RETRIES}回連続 → failed")
+            error_to_write = f"[transient] {error_msg[:400]}"
+        else:
+            # 恒久エラー: リトライ上限で failed 遷移（無限リトライ防止）
+            new_status = "retry" if retry_count < MAX_RETRIES else "failed"
+            error_to_write = error_msg
 
         batch_update_cells(service, [
             (row, COL_STATUS, new_status),
-            (row, COL_ERROR, error_msg),
+            (row, COL_ERROR, error_to_write),
+            (row, COL_RETRY, str(retry_count)),
             (row, COL_LAST_ATTEMPT, now_str),
         ])
 
