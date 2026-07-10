@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -33,6 +34,13 @@ from google.auth.transport.requests import Request
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+
+from sheet_column_map import (
+    build_ext_metric_map,
+    build_metric_map,
+    load_column_map,
+    validate_columns,
+)
 
 
 # ========== パス・スプレッドシート ==========
@@ -121,6 +129,37 @@ COL_1DAY_CAPTURE_MODE = 84  # CG: 1日後_取得区分
 COL_7DAY_CAPTURED_AT = 85   # CH: 1週間後_取得日時
 COL_7DAY_CAPTURE_MODE = 86  # CI: 1週間後_取得区分
 COL_LATEST_CAPTURED_AT = 87 # CJ: 最新取得日時
+
+SYNC_REQUIRED_COLUMNS = [
+    "reach_1d",
+    "views_1d",
+    "engagement_1d",
+    "likes_1d",
+    "saved_1d",
+    "comments_1d",
+    "shares_1d",
+    "profile_visits_1d",
+    "follows_1d",
+    "play_time_1d",
+    "avg_play_time_1d",
+    "reach_7d",
+    "views_7d",
+    "engagement_7d",
+    "likes_7d",
+    "saved_7d",
+    "comments_7d",
+    "shares_7d",
+    "profile_visits_7d",
+    "follows_7d",
+    "play_time_7d",
+    "avg_play_time_7d",
+    "reposts_7d",
+    "captured_at_1d",
+    "capture_mode_1d",
+    "captured_at_7d",
+    "capture_mode_7d",
+    "latest_captured",
+]
 
 # ---------- 経過時間しきい値 ----------
 HOURS_1DAY_MIN = 24
@@ -427,8 +466,26 @@ def block_is_complete(row: List[Any], metric_to_col: Dict[str, int]) -> bool:
     return all(has_cell_value(row, col_index) for col_index in metric_to_col.values())
 
 
-def parse_sheet_rows(values: List[List[Any]], start_row: int = 4) -> List[SheetRow]:
+def parse_sheet_rows(
+    values: List[List[Any]],
+    start_row: int = 4,
+    metric_to_col_1day: Optional[Dict[str, int]] = None,
+    metric_to_col_7day: Optional[Dict[str, int]] = None,
+    ext_metric_to_col_1day: Optional[Dict[str, int]] = None,
+    ext_metric_to_col_7day: Optional[Dict[str, int]] = None,
+    metadata_cols: Optional[Dict[str, int]] = None,
+) -> List[SheetRow]:
     """シートの values から行リストを組み立てる。URL がある行だけ。"""
+    metric_to_col_1day = metric_to_col_1day or METRIC_TO_COL_1DAY
+    metric_to_col_7day = metric_to_col_7day or METRIC_TO_COL_7DAY
+    ext_metric_to_col_1day = ext_metric_to_col_1day or EXT_METRIC_TO_COL_1DAY
+    ext_metric_to_col_7day = ext_metric_to_col_7day or EXT_METRIC_TO_COL_7DAY
+    metadata_cols = metadata_cols or {
+        "captured_at_1d": COL_1DAY_CAPTURED_AT,
+        "capture_mode_1d": COL_1DAY_CAPTURE_MODE,
+        "captured_at_7d": COL_7DAY_CAPTURED_AT,
+        "capture_mode_7d": COL_7DAY_CAPTURE_MODE,
+    }
     rows: List[SheetRow] = []
     for offset, row in enumerate(values):
         row_idx = start_row + offset
@@ -439,14 +496,14 @@ def parse_sheet_rows(values: List[List[Any]], start_row: int = 4) -> List[SheetR
             continue
         date_str = (row[COL_DATE] or "").strip() if len(row) > COL_DATE else ""
         time_str = (row[COL_TIME] or "").strip() if len(row) > COL_TIME else ""
-        has_1day = block_is_complete(row, METRIC_TO_COL_1DAY)
-        has_7day = block_is_complete(row, METRIC_TO_COL_7DAY)
-        has_1day_metadata = has_cell_value(row, COL_1DAY_CAPTURED_AT) and has_cell_value(row, COL_1DAY_CAPTURE_MODE)
-        has_7day_metadata = has_cell_value(row, COL_7DAY_CAPTURED_AT) and has_cell_value(row, COL_7DAY_CAPTURE_MODE)
+        has_1day = block_is_complete(row, metric_to_col_1day)
+        has_7day = block_is_complete(row, metric_to_col_7day)
+        has_1day_metadata = has_cell_value(row, metadata_cols["captured_at_1d"]) and has_cell_value(row, metadata_cols["capture_mode_1d"])
+        has_7day_metadata = has_cell_value(row, metadata_cols["captured_at_7d"]) and has_cell_value(row, metadata_cols["capture_mode_7d"])
         # 拡張メトリクスの完了チェック（少なくとも1つ拡張列に値があれば完了扱い）
-        _ext1_check_col = next(iter(EXT_METRIC_TO_COL_1DAY.values()), None)
+        _ext1_check_col = next(iter(ext_metric_to_col_1day.values()), None)
         has_1day_ext = has_cell_value(row, _ext1_check_col) if _ext1_check_col is not None else True
-        _ext7_check_col = next(iter(EXT_METRIC_TO_COL_7DAY.values()), None)
+        _ext7_check_col = next(iter(ext_metric_to_col_7day.values()), None)
         has_7day_ext = has_cell_value(row, _ext7_check_col) if _ext7_check_col is not None else True
         rows.append(SheetRow(
             row_index=row_idx,
@@ -654,6 +711,26 @@ def batch_update_cells(sheets_service, updates: List[Dict[str, Any]]) -> None:
     ).execute()
 
 
+def load_sync_column_maps(sheets_service) -> tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
+    """ヘッダーから現在の列位置を検出し、同期用マッピングを生成する。"""
+    col_map = load_column_map(sheets_service, SHEET_ID)
+    validate_columns(col_map, required=SYNC_REQUIRED_COLUMNS, caller="sync_instagram_insights.py")
+    metadata_cols = {
+        "captured_at_1d": col_map["captured_at_1d"],
+        "capture_mode_1d": col_map["capture_mode_1d"],
+        "captured_at_7d": col_map["captured_at_7d"],
+        "capture_mode_7d": col_map["capture_mode_7d"],
+        "latest_captured": col_map["latest_captured"],
+    }
+    return (
+        build_metric_map(col_map, "1day"),
+        build_metric_map(col_map, "7day"),
+        build_ext_metric_map(col_map, "1day"),
+        build_ext_metric_map(col_map, "7day"),
+        metadata_cols,
+    )
+
+
 def build_metric_updates(
     row: int,
     insights: Dict[str, Any],
@@ -685,19 +762,27 @@ def build_snapshot_metadata_updates(
     snapshot_type: str,
     capture_mode: str,
     captured_at: str,
+    metadata_cols: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
+    metadata_cols = metadata_cols or {
+        "captured_at_1d": COL_1DAY_CAPTURED_AT,
+        "capture_mode_1d": COL_1DAY_CAPTURE_MODE,
+        "captured_at_7d": COL_7DAY_CAPTURED_AT,
+        "capture_mode_7d": COL_7DAY_CAPTURE_MODE,
+        "latest_captured": COL_LATEST_CAPTURED_AT,
+    }
     updates: List[Dict[str, Any]] = []
     if snapshot_type == "1day":
         targets = [
-            (COL_1DAY_CAPTURED_AT, captured_at),
-            (COL_1DAY_CAPTURE_MODE, capture_mode),
-            (COL_LATEST_CAPTURED_AT, captured_at),
+            (metadata_cols["captured_at_1d"], captured_at),
+            (metadata_cols["capture_mode_1d"], capture_mode),
+            (metadata_cols["latest_captured"], captured_at),
         ]
     else:
         targets = [
-            (COL_7DAY_CAPTURED_AT, captured_at),
-            (COL_7DAY_CAPTURE_MODE, capture_mode),
-            (COL_LATEST_CAPTURED_AT, captured_at),
+            (metadata_cols["captured_at_7d"], captured_at),
+            (metadata_cols["capture_mode_7d"], capture_mode),
+            (metadata_cols["latest_captured"], captured_at),
         ]
     for col_index, value in targets:
         updates.append(
@@ -811,18 +896,27 @@ def main() -> None:
         creds = get_google_credentials()
         access_token, ig_user_id = load_instagram_config()
     except FileNotFoundError as e:
+        # 認証/設定エラーで exit 0 だと workflow 緑 + Healthchecks 成功ping になり沈黙障害化する
         print(f"エラー: {e}")
-        return
+        sys.exit(1)
 
     sheets_service = build("sheets", "v4", credentials=creds)
     ensure_raw_sheet(sheets_service)
+    (
+        metric_to_col_1day,
+        metric_to_col_7day,
+        ext_metric_to_col_1day,
+        ext_metric_to_col_7day,
+        metadata_cols,
+    ) = load_sync_column_maps(sheets_service)
 
     # 2. Instagram メディア一覧取得（media_type 含む）
     try:
         media_list = fetch_all_media(access_token, ig_user_id)
     except requests.RequestException as e:
+        # メディア一覧が全体で取れない = 同期全体が不能 → 明示的に失敗させる
         print(f"Instagram API エラー: {e}")
-        return
+        sys.exit(1)
     media_by_path = build_media_by_path(media_list)
 
     # メディアタイプ分布
@@ -859,7 +953,15 @@ def main() -> None:
     # URL が空の行について、日付・時刻から permalink を推定して埋める
     fill_missing_urls(sheets_service, values, media_list, start_row=4)
 
-    sheet_rows = parse_sheet_rows(values, start_row=4)
+    sheet_rows = parse_sheet_rows(
+        values,
+        start_row=4,
+        metric_to_col_1day=metric_to_col_1day,
+        metric_to_col_7day=metric_to_col_7day,
+        ext_metric_to_col_1day=ext_metric_to_col_1day,
+        ext_metric_to_col_7day=ext_metric_to_col_7day,
+        metadata_cols=metadata_cols,
+    )
     print(f"シート: URL が入っている行 {len(sheet_rows)} 件")
 
     # 4. 照合してインサイト取得・書き込み
@@ -928,11 +1030,11 @@ def main() -> None:
             captured_at = datetime.now(timezone.utc).isoformat()
             capture_mode = capture_mode_1day or "scheduled"
             if needs_1day_metrics:
-                pending_updates.extend(build_metric_updates(row, insights, METRIC_TO_COL_1DAY))
+                pending_updates.extend(build_metric_updates(row, insights, metric_to_col_1day))
             if needs_1day_ext:
-                pending_updates.extend(build_metric_updates(row, insights, EXT_METRIC_TO_COL_1DAY))
+                pending_updates.extend(build_metric_updates(row, insights, ext_metric_to_col_1day))
             if needs_1day_metadata:
-                pending_updates.extend(build_snapshot_metadata_updates(row, "1day", capture_mode, captured_at))
+                pending_updates.extend(build_snapshot_metadata_updates(row, "1day", capture_mode, captured_at, metadata_cols))
             pending_raw_rows.append(build_raw_row(row, "1day", capture_mode, captured_at, media, insights))
             if needs_1day_metrics:
                 written_1day += 1
@@ -961,11 +1063,11 @@ def main() -> None:
             captured_at = datetime.now(timezone.utc).isoformat()
             capture_mode = capture_mode_7day or "scheduled"
             if needs_7day_metrics:
-                pending_updates.extend(build_metric_updates(row, insights, METRIC_TO_COL_7DAY))
+                pending_updates.extend(build_metric_updates(row, insights, metric_to_col_7day))
             if needs_7day_ext:
-                pending_updates.extend(build_metric_updates(row, insights, EXT_METRIC_TO_COL_7DAY))
+                pending_updates.extend(build_metric_updates(row, insights, ext_metric_to_col_7day))
             if needs_7day_metadata:
-                pending_updates.extend(build_snapshot_metadata_updates(row, "7day", capture_mode, captured_at))
+                pending_updates.extend(build_snapshot_metadata_updates(row, "7day", capture_mode, captured_at, metadata_cols))
             pending_raw_rows.append(build_raw_row(row, "7day", capture_mode, captured_at, media, insights))
             if needs_7day_metrics:
                 written_7day += 1
