@@ -12,9 +12,10 @@ from typing import Iterable, List, Optional, Tuple
 
 # utils/ の親 = 事業 Cursor
 _WORKSPACE = Path(__file__).resolve().parent.parent
+# DriveFSマウントはアカウントごとにパスが変わるためglobで解決(メールアドレスのハードコード回避)
+_GDRIVE_MOUNTS = sorted((Path.home() / "Library/CloudStorage").glob("GoogleDrive-*/マイドライブ"))
 GDRIVE_1POST = (
-    Path.home()
-    / "Library/CloudStorage/GoogleDrive-kueritikx@gmail.com/マイドライブ"
+    (_GDRIVE_MOUNTS[0] if _GDRIVE_MOUNTS else Path.home() / "GoogleDrive-not-mounted")
     / "01_タッキー事業/事業/SNS/Instagram/1.Post"
 )
 LEGACY_WORKSPACE_1POST = _WORKSPACE / "SNS/Instagram/1.Post"
