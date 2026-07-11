@@ -1,0 +1,68 @@
+# 週次SNS PDCAループ(クラウド版)
+# 毎週月曜 8:00 JST (= 日曜 23:00 UTC) に実行:
+#   1. 週次タブ更新(Threads/X/note upsert + IG部分記入)
+#   2. 週次レポート生成 → Discordへ embed + md添付で配信(公開リポのためコミットしない)
+#   3. Addy壁打ち2往復(ADDNESS_API_KEY があれば。未設定ならスキップ=正常)
+# ローカル版(LaunchAgent 月曜8:30・Obsidian保存+完全版Addy担当)と併走。upsertは冪等。
+name: Weekly SNS Rollup
+
+on:
+  schedule:
+    - cron: '0 23 * * 0'  # 月曜 8:00 JST
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'dry-run (スプシ書き込みなし)'
+        required: false
+        default: false
+        type: boolean
+      no_notify:
+        description: 'Discord送信を抑止'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  weekly-rollup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: weekly-sns-rollup
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run weekly SNS rollup
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          ADDNESS_API_KEY: ${{ secrets.ADDNESS_API_KEY }}  # optional(未設定でもスキップ動作で成功)
+          PYTHONUNBUFFERED: '1'
+        run: |
+          FLAGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then FLAGS="$FLAGS --dry-run"; fi
+          if [ "${{ inputs.no_notify }}" = "true" ]; then FLAGS="$FLAGS --no-notify"; fi
+          echo "📊 週次SNSループ(クラウド版)を実行中... flags:$FLAGS"
+          python scripts/weekly_sns_rollup.py $FLAGS
+
+      - name: Alert on failure (Discord)
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || true
