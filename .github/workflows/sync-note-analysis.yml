@@ -1,0 +1,50 @@
+# note記事の 1日後/7日後スナップショット + 考察自動生成
+# 毎日 JST 22:00 (UTC 13:00) に「🔴note記事コンテンツ管理 2026」の記事一覧タブへ
+# 1d_PV/1d_スキ/7d_PV/7d_スキ のスナップショットと 結果/考察・仮説/次に活かすポイント を書き込む。
+# 前提: PV/スキの累計値はローカル sync_note_stats.py が毎日 20:00 JST に更新済み。
+# IG/Threads/X の fill_*_analysis.py と同水準の日次振り返りを note にも揃える。
+name: Sync Note Analysis
+
+on:
+  schedule:
+    - cron: '0 13 * * *'  # UTC 13:00 → JST 22:00
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: note-analysis-sync
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client
+
+      - name: Fill note analysis (1d / 7d snapshot + 考察)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          PYTHONUNBUFFERED: '1'
+        run: python scripts/fill_note_analysis.py
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || echo "Alert skipped"
