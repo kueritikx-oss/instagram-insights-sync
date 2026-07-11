@@ -40,6 +40,15 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python sync_threads_insights.py
 
+      # ====== 考察自動生成（views到着済み投稿の結果①〜④・考察・次ポイントを補完）======
+      - name: Fill Threads analysis
+        if: success()
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          PYTHONUNBUFFERED: '1'
+        run: python fill_threads_analysis.py
+
       # ====== アカウントインサイト（JST 21:30 = UTC 12:30 のみ）======
       - name: Sync Threads account insights
         if: success()
@@ -53,7 +62,7 @@ jobs:
           HOUR_UTC=$(date -u +%H)
           if [ "${HOUR_UTC}" = "12" ]; then
             echo "Running account insights (JST 21:30)"
-            python sync_threads_insights.py --account --dry-run
+            python sync_threads_insights.py --account
           else
             echo "Account insights only at JST 21:30"
           fi
@@ -62,4 +71,5 @@ jobs:
         if: failure()
         env:
           GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || echo "Alert skipped"
