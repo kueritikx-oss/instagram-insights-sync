@@ -137,7 +137,8 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: |
           if [ -f auth/ga4_token.json ] && [ -f auth/ga4_config.json ]; then
-            python sync_ga4_daily.py --days 2
+            # 2026-07-13: ローカルwrapper(GA4_DAYS=3)退役に伴いカバレッジ維持で2→3へ(決定ログ追補143)
+            python sync_ga4_daily.py --days 3
           else
             echo "⚠️ GA4 auth未設定。スキップ。"
           fi
