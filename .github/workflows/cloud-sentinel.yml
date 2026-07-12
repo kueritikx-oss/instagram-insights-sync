@@ -53,6 +53,7 @@ jobs:
           META_APP_ID: ${{ secrets.META_APP_ID }}
           META_APP_SECRET: ${{ secrets.META_APP_SECRET }}
           THREADS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          DASHBOARD_BASIC_AUTH: ${{ secrets.DASHBOARD_BASIC_AUTH }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SIMULATE_FAILURE: ${{ github.event.inputs.simulate_failure || 'no' }}
@@ -63,6 +64,7 @@ jobs:
           import os
           import sys
           import time
+          import urllib.error
           import urllib.parse
           import urllib.request
 
@@ -190,6 +192,199 @@ jobs:
                               notes.append(f"X直近24h posted {recent}件")
           except Exception as exc:
               problems.append(f"X生存確認に失敗: {type(exc).__name__}")
+
+          # 2.6-2.8) ローカルLaunchAgent監視のクラウド吸収 (Sheets読取のみ・read-only)
+          #   2.6 IG ready滞留       (com.tackey.ig-freshness-check 相当)
+          #   2.7 Threadsサイレント失敗 (com.taiki.threads-post-healthcheck 相当)
+          #   2.8 note公開予定チェック  (com.tackey.note-publish-check 相当)
+          #   列は各シートのヘッダー行から名前検出(列番号ハードコード禁止)。書き込みは一切しない。
+          try:
+              sa_path = "auth/service_account.json"
+              if not (os.path.exists(sa_path) and os.path.getsize(sa_path) > 0):
+                  notes.append("シート監視(IG/Threads/note): service accountなし→skip")
+              else:
+                  from google.auth.transport.requests import Request as _GARequest2
+                  from google.oauth2 import service_account as _ga_sa2
+                  _creds2 = _ga_sa2.Credentials.from_service_account_file(
+                      sa_path, scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"]
+                  )
+                  _creds2.refresh(_GARequest2())
+
+                  def sheets_values(sheet_id, rng):
+                      q = urllib.parse.quote(rng, safe="")
+                      return get_json(
+                          f"https://sheets.googleapis.com/v4/spreadsheets/{sheet_id}/values/{q}",
+                          {"Authorization": f"Bearer {_creds2.token}"},
+                      ).get("values", [])
+
+                  jst = datetime.timezone(datetime.timedelta(hours=9))
+                  now_jst = datetime.datetime.now(jst)
+                  STALE_HOURS = 6  # 予定日時から何時間超過で滞留とみなすか
+
+                  def find_col_exact(headers_rows, *names):
+                      """ヘッダー行群から完全一致で列indexを返す(部分一致だと「制作ステータス」等を誤検出するため)"""
+                      for hrow in headers_rows:
+                          for idx, c in enumerate(hrow):
+                              if str(c).strip() in names:
+                                  return idx
+                      return None
+
+                  def cell2(row, idx):
+                      return str(row[idx]).strip() if idx is not None and idx < len(row) else ""
+
+                  def parse_sched(dv, tv):
+                      """日付('2026-07-12'/'2026/7/12'/'7/12') + 時刻('20:00') → aware datetime(JST)。失敗はNone
+
+                      注意: 投稿スケジュールは数週間先の未来日付が正常状態なので、
+                      X生存確認の「過去日付前提の年跨ぎ補正」は使わない。年なし日付が
+                      半年以上過去に見える場合のみ翌年扱い(12月に見る1月予定の補正)。"""
+                      dv = dv.strip().replace("-", "/")
+                      parts = dv.split("/")
+                      try:
+                          if len(parts) == 3 and len(parts[0]) == 4:
+                              y, m, d = int(parts[0]), int(parts[1]), int(parts[2])
+                          elif len(parts) == 2:
+                              y, m, d = now_jst.year, int(parts[0]), int(parts[1])
+                          else:
+                              return None
+                          dt = datetime.datetime(y, m, d, tzinfo=jst)
+                          if len(parts) == 2 and (now_jst - dt).days > 180:
+                              dt = dt.replace(year=now_jst.year + 1)  # 年跨ぎ補正(12月→翌1月予定)
+                          tvs = tv.strip().replace("：", ":")
+                          if ":" in tvs:
+                              hh, mm = tvs.split(":")[:2]
+                              dt = dt.replace(hour=int(hh), minute=int(mm))
+                          return dt
+                      except (ValueError, IndexError):
+                          return None
+
+                  # 2.6) IG ready滞留: 予定日時が6h以上過去なのに投稿ステータス=ready/retryのまま
+                  try:
+                      ig_sheet_id = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
+                      vals = sheets_values(ig_sheet_id, "'Instagram投稿毎データ'!A1:CZ500")
+                      hrows, drows = vals[:3], vals[3:]  # ヘッダー行1-3 / データA4以降
+                      c_status = find_col_exact(hrows, "投稿ステータス")
+                      c_date = find_col_exact(hrows, "日付")
+                      c_time = find_col_exact(hrows, "時刻", "時間")
+                      c_num = find_col_exact(hrows, "番号")
+                      if c_status is None or c_date is None:
+                          problems.append("IG: 投稿ステータス/日付列をヘッダー行1-3から検出できず — 列名変更の可能性")
+                      else:
+                          stuck = []
+                          for r in drows:
+                              st = cell2(r, c_status).lower()
+                              if st not in ("ready", "retry"):
+                                  continue
+                              sched = parse_sched(cell2(r, c_date), cell2(r, c_time))
+                              if sched and (now_jst - sched).total_seconds() > 3600 * STALE_HOURS:
+                                  stuck.append(cell2(r, c_num) or "?")
+                          if stuck:
+                              problems.append(
+                                  f"IG: ready滞留{len(stuck)}件 (予定{STALE_HOURS}h+超過: "
+                                  f"#{' #'.join(stuck[:5])}) — auto-post-all/CQ列を確認"
+                              )
+                          else:
+                              notes.append("IG ready滞留なし")
+                  except Exception as exc:
+                      problems.append(f"IG ready滞留チェック失敗: {type(exc).__name__}")
+
+                  # 2.7) Threadsサイレント失敗: 予定日時が6h以上過去なのにstatusが投稿完了になっていない
+                  try:
+                      th_sheet_id = "1hdBlZBn9s688f1ZwkTiO3suY27tJEHtXMEPkopLdBNI"
+                      vals = sheets_values(th_sheet_id, "'Threads投稿毎データ'!A1:AZ500")
+                      hrows, drows = vals[:3], vals[3:]
+                      c_status = find_col_exact(hrows, "投稿ステータス")
+                      c_date = find_col_exact(hrows, "日付")
+                      c_time = find_col_exact(hrows, "時刻", "時間")
+                      c_num = find_col_exact(hrows, "番号")
+                      if c_status is None or c_date is None:
+                          problems.append("Threads: 投稿ステータス/日付列をヘッダー行1-3から検出できず — 列名変更の可能性")
+                      else:
+                          stuck = []
+                          for r in drows:
+                              st = cell2(r, c_status).lower()
+                              # 成功(published/posted)・意図的スキップ以外の未完了系のみ対象
+                              if st not in ("ready", "retry"):
+                                  continue
+                              sched = parse_sched(cell2(r, c_date), cell2(r, c_time))
+                              if sched and (now_jst - sched).total_seconds() > 3600 * STALE_HOURS:
+                                  stuck.append(cell2(r, c_num) or "?")
+                          if stuck:
+                              problems.append(
+                                  f"Threads: サイレント失敗疑い{len(stuck)}件 (予定{STALE_HOURS}h+超過でready/retry: "
+                                  f"{' '.join(stuck[:5])}) — auto-post-all/AP列を確認"
+                              )
+                          else:
+                              notes.append("Threads滞留なし")
+                  except Exception as exc:
+                      problems.append(f"Threadsサイレント失敗チェック失敗: {type(exc).__name__}")
+
+                  # 2.8) note公開予定: 公開日時が過去(直近24h窓)なのに note URL が空 = 自動公開の失敗
+                  #   実シートのステータス値は 執筆予定/執筆完了/公開済み/保留 で「公開予定」は
+                  #   公開日+時間列で表現される。保留のみ対象外。古い行の恒久アラート化を防ぐため24h窓。
+                  try:
+                      note_sheet_id = "1gIW_SCigwa5wFPnQVRoFM3EhOaYC3aC_DtkMbqK8gRw"
+                      vals = sheets_values(note_sheet_id, "'記事一覧'!A1:AC100")
+                      hrows, drows = vals[:1], vals[1:]  # ヘッダー行1 / データ行2以降
+                      c_status = find_col_exact(hrows, "ステータス")
+                      c_date = find_col_exact(hrows, "公開日")
+                      c_time = find_col_exact(hrows, "時間", "公開時刻")
+                      c_url = find_col_exact(hrows, "note URL")
+                      c_num = find_col_exact(hrows, "#")
+                      if c_status is None or c_date is None or c_url is None:
+                          problems.append("note: ステータス/公開日/note URL列を行1から検出できず — 列名変更の可能性")
+                      else:
+                          unpublished = []
+                          published_recent = 0
+                          for r in drows:
+                              if not cell2(r, c_num):
+                                  continue
+                              if cell2(r, c_status) == "保留":
+                                  continue
+                              sched = parse_sched(cell2(r, c_date), cell2(r, c_time))
+                              if not sched:
+                                  continue
+                              age = (now_jst - sched).total_seconds()
+                              if 0 < age <= 86400:  # 直近24hに公開予定だった記事
+                                  if cell2(r, c_url):
+                                      published_recent += 1
+                                  else:
+                                      unpublished.append(cell2(r, c_num))
+                          if unpublished:
+                              problems.append(
+                                  f"note: 公開予定なのに未公開{len(unpublished)}件 "
+                                  f"(#{' #'.join(unpublished[:5])}) — note_api_publisher/LaunchAgentを確認"
+                              )
+                          else:
+                              notes.append(f"note公開OK(24h内予定 公開済{published_recent}件)")
+                  except Exception as exc:
+                      problems.append(f"note公開予定チェック失敗: {type(exc).__name__}")
+          except Exception as exc:
+              problems.append(f"シート監視ブロック失敗: {type(exc).__name__}")
+
+          # 2.9) ダッシュボード外形監視 (com.tackey.dashboard-healthcheck 相当・read-only)
+          #   Basic認証はsecret(DASHBOARD_BASIC_AUTH="user:pass")経由。PUBLICリポに認証情報は置かない。
+          #   secret未設定ならskip(問題化しない)。
+          try:
+              dash_auth = os.environ.get("DASHBOARD_BASIC_AUTH", "").strip()
+              if not dash_auth:
+                  notes.append("ダッシュボード外形: secret未設定→skip")
+              else:
+                  import base64
+                  dash_url = "https://cellosupport.xsrv.jp/tackey-dashboard/api.php?action=sheets_2026"
+                  basic = base64.b64encode(dash_auth.encode()).decode()
+                  try:
+                      dash = get_json(dash_url, {"Authorization": f"Basic {basic}"})
+                      if "error" in dash:
+                          problems.append(f"ダッシュボードAPIエラー: {str(dash['error'])[:80]}")
+                      elif "total_posts" in dash:
+                          notes.append("ダッシュボードOK")
+                      else:
+                          problems.append("ダッシュボード応答が想定外 (total_postsなし)")
+                  except urllib.error.HTTPError as he:
+                      problems.append(f"ダッシュボード非200: HTTP {he.code}")
+          except Exception as exc:
+              problems.append(f"ダッシュボード外形監視に失敗: {type(exc).__name__}")
 
           # 3) Cloud workflow freshness (latest success age)
           def latest_success_age_min(workflow_file):

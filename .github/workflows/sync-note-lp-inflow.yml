@@ -1,0 +1,84 @@
+# note記事別 LP流入 (GA4 UTM_campaign別セッション) → 記事一覧タブ「LP流入」列へ日次同期
+# ローカル LaunchAgent com.tackey.note-lp-inflow (毎日01:00 JST) のクラウド移植。
+# 毎日 JST 01:00 (UTC 16:00) 実行。書き込みは既存行の「LP流入」セル update のみ(append禁止)。
+name: Sync Note LP Inflow
+
+on:
+  schedule:
+    - cron: '0 16 * * *'  # UTC 16:00 → JST 01:00
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Set 'yes' to run without writing to the sheet"
+        required: false
+        default: 'no'
+      days:
+        description: "Aggregation window in days (default 30)"
+        required: false
+        default: '30'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: note-lp-inflow-sync
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client google-analytics-data
+
+      # GA4のOAuth fallback用(SAがGA4プロパティ権限を持つ場合はSAが優先される)。
+      # secretのインライン展開禁止・env経由(既存workflowと同パターン)。
+      - name: Write GA4 token and config (fallback auth)
+        env:
+          GA4_TOKEN_JSON: ${{ secrets.GA4_TOKEN_JSON }}
+          GA4_CONFIG_JSON: ${{ secrets.GA4_CONFIG_JSON }}
+        run: |
+          mkdir -p auth
+          if [ -n "$GA4_TOKEN_JSON" ]; then
+            printf '%s' "$GA4_TOKEN_JSON" > auth/ga4_token.json
+          fi
+          if [ -n "$GA4_CONFIG_JSON" ]; then
+            printf '%s' "$GA4_CONFIG_JSON" > auth/ga4_config.json
+          fi
+
+      - name: Sync note LP inflow (GA4 → sheet)
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_TOKEN_JSON: ${{ secrets.GOOGLE_TOKEN_JSON }}
+          GA4_GOOGLE_AUTH_DIR: ${{ github.workspace }}/auth
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'no' }}
+          DAYS: ${{ github.event.inputs.days || '30' }}
+          PYTHONUNBUFFERED: '1'
+        run: |
+          # 数値のみ許可(コマンドインジェクション対策)
+          if ! [[ "$DAYS" =~ ^[0-9]+$ ]]; then
+            DAYS=30
+          fi
+          if [ "$DRY_RUN" = "yes" ]; then
+            python scripts/sync_note_lp_inflow.py --days "$DAYS" --dry-run
+          else
+            python scripts/sync_note_lp_inflow.py --days "$DAYS"
+          fi
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: pip install requests > /dev/null 2>&1 && python scripts/alert_on_failure.py 2>/dev/null || echo "Alert skipped"
