@@ -288,9 +288,13 @@ def save_cookies(client: TwikitClient):
     """Cookie更新を保存（ct0はリクエストごとに変わる）"""
     cookies = client.get_cookies()
 
-    # ローカル保存
-    with open(LOCAL_COOKIES_FILE, 'w') as f:
-        json.dump(cookies, f)
+    # ローカル保存（CI runnerにはこのパスがなく作れないこともあるため、失敗は警告に留める）
+    try:
+        LOCAL_COOKIES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOCAL_COOKIES_FILE, 'w') as f:
+            json.dump(cookies, f)
+    except OSError as exc:
+        print(f"   ⚠️ Cookieローカル保存スキップ: {exc}")
 
     # GitHub Actions向け: 環境変数が設定されていれば更新後のCookieを出力
     if os.environ.get("TWITTER_COOKIES"):
