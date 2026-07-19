@@ -296,10 +296,16 @@ def save_cookies(client: TwikitClient):
     except OSError as exc:
         print(f"   ⚠️ Cookieローカル保存スキップ: {exc}")
 
-    # GitHub Actions向け: 環境変数が設定されていれば更新後のCookieを出力
-    if os.environ.get("TWITTER_COOKIES"):
-        # GitHub Actionsのstep outputsでは使えないが、ログで確認可能
-        print(f"   Cookie更新済み (ct0={cookies.get('ct0', '?')[:8]}...)")
+    # GitHub Actions向け: 更新後Cookieをauth/へ書き出し、後続stepが
+    # scripts/save_twitter_cookies.py で TWITTER_COOKIES Secret に書き戻す
+    if os.environ.get("GITHUB_ACTIONS"):
+        try:
+            Path("auth").mkdir(exist_ok=True)
+            with open("auth/x_cookies_updated.json", 'w') as f:
+                json.dump(cookies, f)
+            print(f"   Cookie更新をauth/へ書き出し (ct0={cookies.get('ct0', '?')[:8]}...)")
+        except OSError as exc:
+            print(f"   ⚠️ Cookie書き出し失敗 (Secret書き戻しスキップ): {exc}")
 
 
 # ── twikit 投稿 ──────────────────────────────────────────────────────

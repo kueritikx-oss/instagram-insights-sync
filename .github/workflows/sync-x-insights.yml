@@ -44,6 +44,13 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python sync_x_insights.py
 
+      - name: Auto-save refreshed Twitter Cookies
+        if: always()
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+          TWITTER_COOKIES: ${{ secrets.TWITTER_COOKIES }}
+        run: pip install pynacl requests > /dev/null 2>&1 && python scripts/save_twitter_cookies.py || echo "Cookie書き戻し失敗 (non-fatal)"
+
       - name: Fill X post analysis
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
