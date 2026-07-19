@@ -276,9 +276,10 @@ def create_text_container(token: str, user_id: str, text: str,
         params["topic_tag"] = topic_tag
     if reply_to_id:
         params["reply_to_id"] = reply_to_id
-    # テキストのみ+非リプライ→auto_publish
-    if not reply_to_id:
-        params["auto_publish_text"] = "true"
+    # 2026-07-19 fix: auto_publish_text は廃止。
+    # 7/13以降、作成時に即公開されるのに poll が FINISHED を返し、
+    # 後続の threads_publish が 400 → retry → 再作成で「重複公開」が発生した。
+    # 標準の 作成→poll→publish 2段方式に統一する。
 
     resp = requests.post(f"{THREADS_API_BASE}/{user_id}/threads", data=params)
     resp.raise_for_status()
@@ -388,7 +389,12 @@ def poll_container_status(token: str, container_id: str) -> str:
 
 
 def publish_container(token: str, user_id: str, container_id: str) -> str:
-    """コンテナを公開"""
+    """コンテナを公開
+
+    2026-07-19 fix: publish が 400 を返しても、コンテナが実は公開済み
+    (status=PUBLISHED / permalink取得可) なら成功として container_id を返す。
+    「公開済みなのにfailed→retry→重複公開」の再発防止ガード。
+    """
     resp = requests.post(
         f"{THREADS_API_BASE}/{user_id}/threads_publish",
         data={
@@ -396,6 +402,16 @@ def publish_container(token: str, user_id: str, container_id: str) -> str:
             "access_token": token,
         },
     )
+    if resp.status_code == 400:
+        chk = requests.get(
+            f"{THREADS_API_BASE}/{container_id}",
+            params={"fields": "id,status,permalink", "access_token": token},
+        )
+        if chk.ok:
+            d = chk.json()
+            if d.get("status") == "PUBLISHED" or d.get("permalink"):
+                print(f"   ⚠️ publish 400だがコンテナは公開済み → 成功扱い ({container_id})")
+                return container_id
     resp.raise_for_status()
     return resp.json()["id"]
 
@@ -417,10 +433,8 @@ def get_thread_permalink(token: str, media_id: str) -> str:
 
 def post_text(token: str, user_id: str, text: str,
               topic_tag: str = None) -> str:
-    """テキスト投稿（auto_publish_text=trueで即時公開）"""
+    """テキスト投稿（作成→poll→publishの標準2段方式）"""
     container_id = create_text_container(token, user_id, text, topic_tag)
-    # auto_publish_text=true なのでコンテナ作成=公開
-    # ステータス確認
     status = poll_container_status(token, container_id)
     if status == "PUBLISHED":
         return container_id  # container_id = media_id
