@@ -2,7 +2,7 @@
 #
 # [改訂理由] 元の15分×3ワークフロー構成はGitHub Actions無料枠(2,000分/月)を
 # 大幅に超過(月16,000分超)していたため、90分間隔の単一ワークフローに統合。
-# --window 120 で投稿を最大120分以内に補足できる。
+# --window 200 で投稿を最大200分以内に補足できる(GitHub schedule 1回スキップでも救済)。
 #
 # 月間消費見込み: ~480分 (旧: ~8,640分)
 name: Auto Post All Platforms
@@ -82,7 +82,7 @@ jobs:
           if [ -n "${{ inputs.force_instagram }}" ]; then
             ARGS="--force ${{ inputs.force_instagram }}"
           fi
-          python cloud_auto_post.py --window 120 $ARGS
+          python cloud_auto_post.py --window 200 $ARGS
 
       - name: Post to X
         id: x
@@ -99,7 +99,7 @@ jobs:
           if [ -n "${FORCE_POST_NUM}" ]; then
             FORCE_ARG="--force ${FORCE_POST_NUM}"
           fi
-          python cloud_auto_post_x.py --window 120 ${FORCE_ARG}
+          python cloud_auto_post_x.py --window 200 ${FORCE_ARG}
 
       - name: Post to Threads
         id: threads
@@ -116,7 +116,7 @@ jobs:
           if [ -n "${FORCE_POST}" ]; then
             FORCE_ARG="--force ${FORCE_POST}"
           fi
-          python cloud_auto_post_threads.py --window 120 ${FORCE_ARG}
+          python cloud_auto_post_threads.py --window 200 ${FORCE_ARG}
 
       - name: Auto-save refreshed Google Token
         if: always()
