@@ -4,7 +4,8 @@ name: Auto Post TikTok
 
 on:
   schedule:
-    - cron: '5 9,15,21 * * *'
+    # 20:00 JST投稿 + --window 45 に合わせる(11:05/11:35 UTC = 20:05/20:35 JST・2回目はリトライ用)
+    - cron: '5,35 11 * * *'
   workflow_dispatch:
     inputs:
       force_post:
