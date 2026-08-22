@@ -29,6 +29,11 @@ from sheet_column_map import _find_section_range, col_letter
 import os
 _auth_dir = os.environ.get("INSTAGRAM_INSIGHTS_GOOGLE_AUTH_DIR", "タッキー/02_SNS集客/instagram-auto-post")
 TOKEN_FILE = os.path.join(_auth_dir, "token.json")
+# Sheets API の一時障害(503 Service Unavailable / 429)対策。
+# googleapiclient が 5xx/429 をランダム指数バックオフで自動再試行する回数。
+# 2026-08-19/20/22 に 503 で同期が3回落ちたため導入。
+SHEETS_API_RETRIES = 5
+
 SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 SHEET_NAME = "Instagram投稿毎データ"
 
@@ -165,7 +170,7 @@ def resolve_columns(service) -> None:
         spreadsheetId=SHEET_ID,
         range=f"'{SHEET_NAME}'!1:3",
         valueRenderOption="FORMATTED_VALUE",
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     header_rows = r.get("values", [])
     if len(header_rows) < 3:
         raise SystemExit(f"❌ ヘッダーが3行未満: {SHEET_NAME}")
@@ -851,7 +856,7 @@ def main():
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
         range=f"'{SHEET_NAME}'!A4:CT500",  # 2026-07-10: e1dd06a(220→500行)の直し漏れ。220のままだと行221以降の投稿に考察が永久生成されない
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     raw_rows = result.get("values", [])
     print(f"📊 {len(raw_rows)}行を読み込み")
 
@@ -1024,7 +1029,7 @@ def main():
         service.spreadsheets().values().batchUpdate(
             spreadsheetId=SHEET_ID,
             body=body,
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
         print(f"  バッチ {i // batch_size + 1}: {len(batch)}行更新完了")
         if i + batch_size < len(updates):
             time.sleep(1)

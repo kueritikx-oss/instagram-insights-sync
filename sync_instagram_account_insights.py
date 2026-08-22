@@ -77,6 +77,11 @@ JST = timezone(timedelta(hours=9))
 
 # ========== スプレッドシート ID ==========
 # 投稿毎データ（新タブ IG_account_daily/weekly を作る先）
+# Sheets API の一時障害(503 Service Unavailable / 429)対策。
+# googleapiclient が 5xx/429 をランダム指数バックオフで自動再試行する回数。
+# 2026-08-19/20/22 に 503 で同期が3回落ちたため導入。
+SHEETS_API_RETRIES = 5
+
 POSTDATA_SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 
 # 日ごと・月ごと・購入者データ（既存）
@@ -265,25 +270,25 @@ def format_weekly_date(dt: datetime) -> str:
 def ensure_tab(sheets_service, sheet_id: str, tab_name: str, headers: List[str]) -> None:
     spreadsheet = sheets_service.spreadsheets().get(
         spreadsheetId=sheet_id, fields="sheets(properties(title))"
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     titles = {s["properties"]["title"] for s in spreadsheet.get("sheets", [])}
     if tab_name not in titles:
         sheets_service.spreadsheets().batchUpdate(
             spreadsheetId=sheet_id,
             body={"requests": [{"addSheet": {"properties": {"title": tab_name}}}]},
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
         print(f"  タブ '{tab_name}' を作成")
     col_letter = column_letter(len(headers) - 1)
     header_range = f"'{tab_name}'!A1:{col_letter}1"
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=header_range
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     current = resp.get("values", [[]])[0] if resp.get("values") else []
     if current != headers:
         sheets_service.spreadsheets().values().update(
             spreadsheetId=sheet_id, range=header_range,
             valueInputOption="USER_ENTERED", body={"values": [headers]},
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
 
 
 def find_row_by_date(
@@ -293,7 +298,7 @@ def find_row_by_date(
     逆順検索で最新年を優先。曜日も検証して誤マッチを防ぐ。"""
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     values = resp.get("values", [])
     target_weekday = WEEKDAY_JP[target_date.weekday()]
 
@@ -326,7 +331,7 @@ def find_row_by_week_start(
     """A列の週開始日（'M/D' or 'M/D'）からマッチする行を返す"""
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     values = resp.get("values", [])
     target_str = format_weekly_date(week_start)
     for i, row in enumerate(values):
@@ -351,7 +356,7 @@ def update_cells(
         sheets_service.spreadsheets().values().batchUpdate(
             spreadsheetId=sheet_id,
             body={"valueInputOption": "USER_ENTERED", "data": data},
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
 
 
 def append_row(sheets_service, sheet_id: str, tab_name: str, row_data: List[Any]) -> None:
@@ -359,14 +364,14 @@ def append_row(sheets_service, sheet_id: str, tab_name: str, row_data: List[Any]
         spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
         valueInputOption="USER_ENTERED", insertDataOption="INSERT_ROWS",
         body={"values": [row_data]},
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
 
 
 def get_existing_dates(sheets_service, sheet_id: str, tab_name: str) -> set:
     try:
         resp = sheets_service.spreadsheets().values().get(
             spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
         return {row[0] for row in resp.get("values", []) if row}
     except Exception:
         return set()
@@ -598,7 +603,7 @@ def fetch_prev_follower_count(sheets_service, target_date: datetime) -> Optional
     try:
         resp = sheets_service.spreadsheets().values().get(
             spreadsheetId=POSTDATA_SHEET_ID, range=f"'{DETAIL_DAILY_TAB}'!A:K",
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
     except Exception:
         return None
     for row in reversed(resp.get("values", [])):
@@ -675,7 +680,7 @@ def detect_missing_daily_dates(sheets_service, days: int) -> List[datetime]:
         try:
             resp = sheets_service.spreadsheets().values().get(
                 spreadsheetId=DAILY_SHEET_ID, range=rng,
-            ).execute()
+            ).execute(num_retries=SHEETS_API_RETRIES)
         except Exception as exc:
             print(f"    ⚠️ 欠損チェック失敗 {target.strftime('%Y-%m-%d')}: {exc}", file=sys.stderr)
             continue

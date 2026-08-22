@@ -48,6 +48,11 @@ GA4_SCOPES = [
 ]
 
 # ========== スプレッドシート ==========
+# Sheets API の一時障害(503 Service Unavailable / 429)対策。
+# googleapiclient が 5xx/429 をランダム指数バックオフで自動再試行する回数。
+# 2026-08-19/20/22 に 503 で同期が3回落ちたため導入。
+SHEETS_API_RETRIES = 5
+
 DAILY_SHEET_ID = "14IUZeZJPjP6CcpmQQZ6NRg6Vi1_CUIJL2hQ0tU-i_LE"
 DAILY_TAB = "日ごとデータ"
 
@@ -305,7 +310,7 @@ def find_row_by_date(sheets_service, target_date: datetime) -> Optional[int]:
     resp = sheets_service.spreadsheets().values().get(
         spreadsheetId=DAILY_SHEET_ID,
         range=f"'{DAILY_TAB}'!A:A",
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     values = resp.get("values", [])
     target_weekday = WEEKDAY_JP[target_date.weekday()]
 
@@ -363,7 +368,7 @@ def write_pv_to_sheet(
         sheets_service.spreadsheets().values().batchUpdate(
             spreadsheetId=DAILY_SHEET_ID,
             body={"valueInputOption": "USER_ENTERED", "data": updates},
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
 
     print(f"  {data['date']}: PV={data['total_pv']} (IG:{data['ig_pv']} TikTok:{data['tiktok_pv']} "
           f"Direct:{data['direct_pv']} Ref:{data['referral_pv']}) "
