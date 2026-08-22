@@ -57,6 +57,11 @@ GOOGLE_AUTH_DIR = Path(
 CREDS_FILE = GOOGLE_AUTH_DIR / "credentials.json"
 TOKEN_FILE = GOOGLE_AUTH_DIR / "token.json"
 
+# Sheets API の一時障害(503 Service Unavailable / 429)対策。
+# googleapiclient が 5xx/429 をランダム指数バックオフで自動再試行する回数。
+# 2026-08-19/20/22 に 503 で同期が3回落ちたため導入。
+SHEETS_API_RETRIES = 5
+
 SHEET_ID = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
 # 2026年データのタブ（gid=1787406075）。絵文字入りシート名はAPIでパースエラーになるため sheetId で参照
 SHEET_ID_2026 = 1787406075
@@ -534,7 +539,7 @@ def ensure_raw_sheet(sheets_service) -> None:
     """Raw インサイト保存用シートがなければ作成し、ヘッダー行をセットする。"""
     spreadsheet = sheets_service.spreadsheets().get(
         spreadsheetId=SHEET_ID, fields="sheets(properties(title))"
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     titles = {s["properties"]["title"] for s in spreadsheet.get("sheets", [])}
 
     if RAW_SHEET_NAME not in titles:
@@ -551,7 +556,7 @@ def ensure_raw_sheet(sheets_service) -> None:
                     }
                 ]
             },
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
 
     # ヘッダーがなければ書く（v2.0 で列数が増えたので常に最新化）
     header_range = f"{RAW_SHEET_NAME}!A1:{column_letter(len(RAW_SHEET_HEADERS) - 1)}1"
@@ -559,7 +564,7 @@ def ensure_raw_sheet(sheets_service) -> None:
         sheets_service.spreadsheets()
         .values()
         .get(spreadsheetId=SHEET_ID, range=header_range)
-        .execute()
+        .execute(num_retries=SHEETS_API_RETRIES)
     )
     current_header = resp.get("values", [[]])[0] if resp.get("values") else []
     if current_header != RAW_SHEET_HEADERS:
@@ -568,7 +573,7 @@ def ensure_raw_sheet(sheets_service) -> None:
             range=header_range,
             valueInputOption="USER_ENTERED",
             body={"values": [RAW_SHEET_HEADERS]},
-        ).execute()
+        ).execute(num_retries=SHEETS_API_RETRIES)
         print(f"RAW シートヘッダーを更新しました（{len(RAW_SHEET_HEADERS)} 列）")
 
 
@@ -654,7 +659,7 @@ def get_sheet_row_count(sheets_service) -> int:
     spreadsheet = sheets_service.spreadsheets().get(
         spreadsheetId=SHEET_ID,
         fields="sheets(properties(sheetId,gridProperties(rowCount)))",
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
     for sheet in spreadsheet.get("sheets", []):
         props = sheet.get("properties", {})
         if props.get("sheetId") == SHEET_ID_2026:
@@ -695,7 +700,7 @@ def update_sheet_cell(
     }
     sheets_service.spreadsheets().values().batchUpdateByDataFilter(
         spreadsheetId=SHEET_ID, body=body
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
 
 
 def batch_update_cells(sheets_service, updates: List[Dict[str, Any]]) -> None:
@@ -708,7 +713,7 @@ def batch_update_cells(sheets_service, updates: List[Dict[str, Any]]) -> None:
     }
     sheets_service.spreadsheets().values().batchUpdateByDataFilter(
         spreadsheetId=SHEET_ID, body=body
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
 
 
 def load_sync_column_maps(sheets_service) -> tuple[Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int], Dict[str, int]]:
@@ -840,7 +845,7 @@ def append_raw_snapshots(sheets_service, rows: List[List[Any]]) -> None:
         valueInputOption="USER_ENTERED",
         insertDataOption="INSERT_ROWS",
         body={"values": rows},
-    ).execute()
+    ).execute(num_retries=SHEETS_API_RETRIES)
 
 
 def capture_mode_for_snapshot(snapshot_type: str, hours: float) -> str:
@@ -945,7 +950,7 @@ def main() -> None:
         sheets_service.spreadsheets()
         .values()
         .batchGetByDataFilter(spreadsheetId=SHEET_ID, body=body)
-        .execute()
+        .execute(num_retries=SHEETS_API_RETRIES)
     )
     value_ranges = result.get("valueRanges", [])
     values = value_ranges[0].get("valueRange", {}).get("values", []) if value_ranges else []
