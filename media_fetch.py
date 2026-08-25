@@ -75,20 +75,31 @@ async def afetch_image_bytes(url: str, *, timeout: int = 30, attempts: int = 3) 
 
 
 def image_url_reachable(url: str, *, timeout: int = 10) -> bool:
-    """投稿前の到達確認。HEADが通らない相手にはRangeつきGETで確かめる。"""
+    """投稿前の到達確認。
+
+    🔴 HEADを信用しない。files.catbox.moe は**存在しない画像にもHEAD 200**を返す
+    （Content-Length: 0 / Content-Type: image/jpeg）。実体はGETで404。
+    旧実装はHEAD 200で「到達OK」と判定していたため、死んだURLをそのまま
+    Instagramへ渡して後段で分かりにくく落ちていた（2026-08-26 実測で発覚）。
+    そのため**Rangeつきの1バイトGETを正**とし、HEADは「中身のある200」を
+    返したときだけ速い経路として採用する。
+    """
     import requests
 
     for attempt in range(2):
         try:
-            r = requests.head(url, timeout=timeout, headers=DEFAULT_HEADERS,
-                              allow_redirects=True)
-            if r.status_code in (200, 206):
-                return True
-            r = requests.get(url, timeout=timeout, allow_redirects=True,
-                             headers={**DEFAULT_HEADERS, "Range": "bytes=0-0"})
-            if r.status_code in (200, 206):
-                return True
-            return False
+            head = requests.head(url, timeout=timeout, headers=DEFAULT_HEADERS,
+                                 allow_redirects=True)
+            if head.status_code in (200, 206):
+                try:
+                    if int(head.headers.get("Content-Length") or 0) > 0:
+                        return True
+                except (TypeError, ValueError):
+                    pass
+            # HEADが当てにならないので実体を1バイトだけ取って確かめる
+            got = requests.get(url, timeout=timeout, allow_redirects=True,
+                               headers={**DEFAULT_HEADERS, "Range": "bytes=0-0"})
+            return got.status_code in (200, 206) and len(got.content) > 0
         except Exception as exc:  # noqa: BLE001
             if not _is_transient(exc) or attempt == 1:
                 return False
