@@ -311,11 +311,13 @@ def save_cookies(client: TwikitClient):
 # ── twikit 投稿 ──────────────────────────────────────────────────────
 
 async def download_image_bytes(url: str) -> bytes:
-    """URLから画像をダウンロード"""
-    async with httpx.AsyncClient(timeout=30) as http:
-        resp = await http.get(url)
-        resp.raise_for_status()
-        return resp.content
+    """URLから画像をダウンロード。
+
+    画像ホストがPythonクライアントの既定UAを弾くため media_fetch 経由に寄せた
+    （2026-08-26。X画像投稿が全滅していた真因。詳細は media_fetch.py）。
+    """
+    from media_fetch import afetch_image_bytes
+    return await afetch_image_bytes(url)
 
 
 async def twikit_upload_media(client: TwikitClient, image_url: str) -> str:

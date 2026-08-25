@@ -611,17 +611,12 @@ def _preflight_check_urls(image_urls):
     """Pre-flight: verify all image URLs are reachable before creating containers.
     Returns (ok: bool, failed_indices: list[int]).
     """
-    failed = []
-    for i, url in enumerate(image_urls):
-        try:
-            resp = requests.head(url, timeout=10, allow_redirects=True)
-            if resp.status_code not in (200, 206):
-                # Fallback: GET with range header
-                resp = requests.get(url, timeout=10, headers={"Range": "bytes=0-0"})
-                if resp.status_code not in (200, 206):
-                    failed.append(i)
-        except Exception:
-            failed.append(i)
+    # 画像ホストは python-requests の既定UAを弾いてコネクションを切る。
+    # ここで弾かれると到達しているURLを「到達不能」と誤判定して投稿ごと止まる
+    # （2026-08-26にX側で同じ罠が発覚。取得口は media_fetch に集約した）。
+    from media_fetch import image_url_reachable
+
+    failed = [i for i, url in enumerate(image_urls) if not image_url_reachable(url)]
     return len(failed) == 0, failed
 
 
