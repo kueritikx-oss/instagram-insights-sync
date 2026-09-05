@@ -40,6 +40,20 @@ from datetime import datetime, timedelta, timezone
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.http import HttpRequest
+
+# --- 2026-09-05: Sheets API の 503/429 で落ちない（2026-09-04 の schedule run が 503 で failure） ---
+# googleapiclient 自身の num_retries（5xx/429 を指数バックオフで再試行）を全 execute() に既定で付ける。
+# 1箇所だけ直すと別の呼び出しで再発するので、モジュール全体に効かせる。
+_orig_execute = HttpRequest.execute
+
+
+def _execute_with_retry(self, *args, **kwargs):
+    kwargs.setdefault("num_retries", 4)
+    return _orig_execute(self, *args, **kwargs)
+
+
+HttpRequest.execute = _execute_with_retry
 
 JST = timezone(timedelta(hours=9))
 
