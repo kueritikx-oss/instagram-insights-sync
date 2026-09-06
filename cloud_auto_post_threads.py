@@ -47,6 +47,14 @@ from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
+# Sheets の一時障害(503/429/socket断)で投稿の読み書きが1発で落ちないようにする。
+# 正本: utils/sheet_column_map.py の execute_with_retry (10/20/40/80秒バックオフ)
+try:
+    from sheet_column_map import execute_with_retry as _execute_with_retry  # noqa: E402
+except ImportError:  # 単体チェックアウトで未配置なら従来どおり1発実行
+    def _execute_with_retry(request, label: str = ""):
+        return request.execute()
+
 # ── 定数 ─────────────────────────────────────────────────────────────
 
 # Threads API
@@ -173,10 +181,13 @@ def get_sheets_service():
 
 def read_sheet_data(service, range_str: str) -> list:
     """スプレッドシートからデータを読み取る"""
-    result = service.spreadsheets().values().get(
-        spreadsheetId=THREADS_SPREADSHEET_ID,
-        range=range_str,
-    ).execute()
+    result = _execute_with_retry(
+        service.spreadsheets().values().get(
+            spreadsheetId=THREADS_SPREADSHEET_ID,
+            range=range_str,
+        ),
+        label=f"read_sheet_data {range_str}",
+    )
     return result.get("values", [])
 
 
@@ -184,12 +195,15 @@ def update_cell(service, row: int, col: int, value: str):
     """単一セルを更新"""
     col_letter = _col_idx_to_letter(col)
     cell = f"{THREADS_SHEET_NAME}!{col_letter}{row}"
-    service.spreadsheets().values().update(
-        spreadsheetId=THREADS_SPREADSHEET_ID,
-        range=cell,
-        valueInputOption="USER_ENTERED",
-        body={"values": [[value]]},
-    ).execute()
+    _execute_with_retry(
+        service.spreadsheets().values().update(
+            spreadsheetId=THREADS_SPREADSHEET_ID,
+            range=cell,
+            valueInputOption="USER_ENTERED",
+            body={"values": [[value]]},
+        ),
+        label=f"update_cell {cell}",
+    )
 
 
 def batch_update_cells(service, updates: list):
@@ -203,10 +217,13 @@ def batch_update_cells(service, updates: list):
         })
 
     if data:
-        service.spreadsheets().values().batchUpdate(
-            spreadsheetId=THREADS_SPREADSHEET_ID,
-            body={"valueInputOption": "USER_ENTERED", "data": data},
-        ).execute()
+        _execute_with_retry(
+            service.spreadsheets().values().batchUpdate(
+                spreadsheetId=THREADS_SPREADSHEET_ID,
+                body={"valueInputOption": "USER_ENTERED", "data": data},
+            ),
+            label=f"batch_update_cells {len(data)}件",
+        )
 
 
 def get_col_value(row_data: list, col_idx: int) -> str:
