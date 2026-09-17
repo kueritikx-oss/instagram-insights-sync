@@ -6,8 +6,11 @@ name: Sync Instagram Insights
 
 on:
   schedule:
-    # JST 0:00=UTC15, 3:00=UTC18, 9:00=UTC0, 15:00=UTC6, 21:00=UTC12
-    - cron: '0 0,6,12,15,18 * * *'
+    # 投稿レベルインサイトのみ: JST 0:00=UTC15, 9:00=UTC0, 15:00=UTC6, 21:00=UTC12
+    - cron: '0 0,6,12,15 * * *'
+    # アカウントレベルインサイト + GA4: JST 3:00=UTC18
+    # （github.event.schedule で判定するため、この枠だけ独立した cron に分ける）
+    - cron: '0 18 * * *'
   workflow_dispatch:
     inputs:
       backfill_days:
@@ -15,6 +18,11 @@ on:
         required: false
         default: '14'
         type: string
+      account:
+        description: 'アカウントレベルインサイト(IG_account_daily_2026)とGA4も取得する'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: write
@@ -67,15 +75,19 @@ jobs:
           PYTHONUNBUFFERED: '1'
         run: python fill_post_analysis.py --force
 
-      # ====== アカウントレベルインサイト（JST 3:00 = UTC 18:00 のみ）======
-      - name: Check if account insights should run (JST 3:00)
+      # ====== アカウントレベルインサイト（UTC 18:00 の cron 枠のみ）======
+      # 2026-09-17修正: 以前は `date -u +%H` = "18" の等値判定だったが、GitHub Actions の
+      # schedule は毎回1〜4時間遅れて起動するため、このゲートが一度も当たらず
+      # アカウント指標が 2026-08-25 から3週間停止していた（workflowはsuccessのまま＝緑の嘘）。
+      # 遅延の影響を受けない github.event.schedule（発火した cron 文字列）で判定する。
+      - name: Check if account insights should run (UTC 18:00 cron)
         id: check_account
+        env:
+          IS_ACCOUNT_RUN: ${{ github.event.schedule == '0 18 * * *' || github.event.inputs.account == 'true' }}
         run: |
-          HOUR_UTC=$(date -u +%H)
           DAY_OF_WEEK=$(TZ=Asia/Tokyo date +%u)
-          echo "hour_utc=$HOUR_UTC" >> $GITHUB_OUTPUT
           echo "day_of_week=$DAY_OF_WEEK" >> $GITHUB_OUTPUT
-          if [ "$HOUR_UTC" = "18" ]; then
+          if [ "$IS_ACCOUNT_RUN" = "true" ]; then
             echo "run_account=true" >> $GITHUB_OUTPUT
             if [ "$DAY_OF_WEEK" = "1" ]; then
               echo "run_weekly=true" >> $GITHUB_OUTPUT
