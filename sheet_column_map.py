@@ -127,6 +127,54 @@ def _find_section_range(row1: List[str], section_name: str) -> tuple[int, int]:
     return 0, len(row1)
 
 
+# ---- transient障害(5xx/429/timeout/DNS)リトライ ----
+# 2026-08-26: Sheets API 503 でヘッダー読みが一発死し、日次SNS考察ログ
+# (com.tackey.daily-sns-obsidian) が exit 2 で落ちた。get_values 側には
+# 2026-08-22にリトライを入れたが、この load_column_map だけ素の execute()
+# のまま残っていた（「落ちた1箇所でなく全呼び出しを潰す」の取りこぼし）。
+_TRANSIENT_MARKS = (
+    "HttpError 429", "HttpError 500", "HttpError 502",
+    "HttpError 503", "HttpError 504",
+    "TimeoutError", "timed out", "Connection reset by peer",
+    "NameResolutionError", "nodename nor servname",
+    "Max retries exceeded", "Network is unreachable",
+    "The service is currently unavailable",
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    s = f"{type(exc).__name__}: {exc}"
+    return any(m in s for m in _TRANSIENT_MARKS)
+
+
+def execute_with_retry(request, label: str = "", attempts: int = 5,
+                       base_sleep: int = 10):
+    """Sheets/Drive の request.execute() を transient障害に対して粘らせる。
+
+    待ち時間 10/20/40/80秒 = 最大約2.5分。Google側の一時的な503は
+    数十秒で復帰することが多く、従来の3回×5秒(計15秒)では足りなかった。
+    transient でない例外（権限・レンジ不正等）はそのまま投げる。
+    """
+    import sys
+    import time
+
+    last: Exception | None = None
+    for i in range(attempts):
+        try:
+            return request.execute()
+        except Exception as exc:  # noqa: BLE001 - 判定は _is_transient に委ねる
+            if not _is_transient(exc):
+                raise
+            last = exc
+            if i < attempts - 1:
+                wait = base_sleep * (2 ** i)
+                print(f"  ⏳ Sheets一時障害リトライ {i + 1}/{attempts - 1} "
+                      f"({type(exc).__name__}) {wait}s待機: {label}",
+                      file=sys.stderr, flush=True)
+                time.sleep(wait)
+    raise last  # type: ignore[misc]
+
+
 def load_column_map(
     sheets_service,
     spreadsheet_id: str,
@@ -138,11 +186,14 @@ def load_column_map(
     Returns:
         {"reach_1d": 24, "views_1d": 33, ...}
     """
-    r = sheets_service.spreadsheets().values().get(
-        spreadsheetId=spreadsheet_id,
-        range=f"'{tab_name}'!1:3",
-        valueRenderOption="FORMATTED_VALUE",
-    ).execute()
+    r = execute_with_retry(
+        sheets_service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{tab_name}'!1:3",
+            valueRenderOption="FORMATTED_VALUE",
+        ),
+        label=f"load_column_map '{tab_name}'!1:3",
+    )
     header_rows = r.get("values", [])
     if len(header_rows) < 3:
         raise ValueError(f"ヘッダーが3行未満: {tab_name}")
