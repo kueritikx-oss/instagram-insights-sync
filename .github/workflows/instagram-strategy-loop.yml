@@ -98,19 +98,18 @@ jobs:
           set -o pipefail
           python instagram_strategy_loop.py weekly 2>&1 | tee /tmp/sl_weekly.txt
 
-      - name: Notify weekly summary (ntfy)
+      - name: Notify weekly summary (Discord)
         if: >-
           success() &&
           (steps.mode.outputs.mode == 'weekly' || steps.mode.outputs.mode == 'all')
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          [ -z "$NTFY_TOPIC" ] && exit 0
           SUM=$(grep -E "TOP|保存|リーチ|来週|最強|組み合わせ|フック|🔥|💾|📊|🏆" /tmp/sl_weekly.txt 2>/dev/null | grep -vE "接続中|読み込み中" | tail -12 | head -c 1000)
           [ -z "$SUM" ] && SUM="週次レビュー完了"
           printf -v BODY '%s\n\n詳細はスプシ「戦略ループ_週次」タブ' "$SUM"
-          curl -s -H "Title: 📊 週次SNSレポート" -H "Tags: bar_chart" \
-            -d "$BODY" "https://ntfy.sh/${NTFY_TOPIC}" > /dev/null || true
+          NOTIFY_TITLE="📊 週次SNSレポート" NOTIFY_LEVEL=info NOTIFY_BODY="$BODY" \
+            python3 scripts/notify_discord.py || true
 
       # ====== Monthly Analysis ======
       - name: Run monthly analysis
@@ -126,19 +125,18 @@ jobs:
           set -o pipefail
           python instagram_strategy_loop.py monthly 2>&1 | tee /tmp/sl_monthly.txt
 
-      - name: Notify monthly summary (ntfy)
+      - name: Notify monthly summary (Discord)
         if: >-
           success() &&
           (steps.mode.outputs.mode == 'monthly' || steps.mode.outputs.mode == 'monthly_and_hooks' || steps.mode.outputs.mode == 'all')
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
         run: |
-          [ -z "$NTFY_TOPIC" ] && exit 0
           SUM=$(grep -E "リーチ|保存|フォロー|PV|ピラー|ベンチマーク|配分|📈|🏆|前月" /tmp/sl_monthly.txt 2>/dev/null | grep -vE "接続中|読み込み中" | tail -12 | head -c 1000)
           [ -z "$SUM" ] && SUM="月次分析完了"
           printf -v BODY '%s\n\n詳細はスプシ「戦略ループ_月次」タブ' "$SUM"
-          curl -s -H "Title: 📅 月次SNSレポート" -H "Tags: calendar" \
-            -d "$BODY" "https://ntfy.sh/${NTFY_TOPIC}" > /dev/null || true
+          NOTIFY_TITLE="📅 月次SNSレポート" NOTIFY_LEVEL=info NOTIFY_BODY="$BODY" \
+            python3 scripts/notify_discord.py || true
 
       # ====== Hook Bank Update ======
       - name: Update hook bank
