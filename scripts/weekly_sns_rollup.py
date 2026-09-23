@@ -1221,6 +1221,7 @@ def send_discord_report(summary: str, tab_result: str, filename: str, report_md:
         return False
     payload = {
         "username": "週次SNSループ ☁️",
+        "flags": 4096,  # 置くだけ（レポートは鳴らさない。2026-09-24 scripts/discord_ring.py）
         "embeds": [{
             "title": f"☁️📊 {summary.splitlines()[0][:230]}",
             "description": "\n".join(summary.splitlines()[1:])[:3500],

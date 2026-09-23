@@ -293,6 +293,7 @@ def notify_discord_if_issues(summary: dict, issue_rows: list[dict[str, Any]]) ->
                 "footer": {"text": "audit_daily_data_cells.py (cloud)"},
             }]
         }
+        payload["flags"] = 4096  # 置くだけ（warn は鳴らさない。2026-09-24 scripts/discord_ring.py）
         requests.post(webhook, json=payload, timeout=15)
         print(f"Discord warn送信: {len(issue_rows)} issues")
     except Exception as e:

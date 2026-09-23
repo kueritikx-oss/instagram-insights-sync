@@ -6,7 +6,8 @@
 環境変数:
 - DISCORD_WEBHOOK: Webhook URL（未設定ならスキップ）
 - NOTIFY_TITLE / NOTIFY_BODY: 見出しと本文
-- NOTIFY_LEVEL: info | warn | critical（critical だけ @here を付ける）
+- NOTIFY_LEVEL: info | warn | critical（critical だけ @here を付ける。
+  スマホが鳴るのは日中の critical だけ。判定は scripts/discord_ring.py）
 
 通知の失敗でジョブを落とさない（常に exit 0。理由はログに出す）。
 """
@@ -14,6 +15,9 @@ import json
 import os
 import sys
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import discord_ring  # noqa: E402
 
 COLOR = {"critical": 0xE74C3C, "warn": 0xF39C12, "info": 0x3498DB}
 EMOJI = {"critical": "🚨", "warn": "⚠️", "info": "ℹ️"}
@@ -35,6 +39,8 @@ def main() -> int:
     }]}
     if level == "critical":
         payload["content"] = "@here"
+    # 鳴らすのは日中の critical だけ。それ以外は置くだけ（2026-09-24 充電が持たないほど鳴っていた）
+    discord_ring.apply(payload, *discord_ring.ring_ok(level))
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),

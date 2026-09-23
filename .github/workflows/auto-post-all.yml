@@ -170,7 +170,7 @@ jobs:
           echo "🟡 一部媒体失敗: ${FAILED}→ Discord warn通知"
           NOW_UTC=$(date -u '+%Y-%m-%d %H:%M UTC')
           curl -sS -X POST -H "Content-Type: application/json" \
-            -d "{\"username\": \"GitHub Actions Alert\", \"embeds\": [{\"title\": \"🟡 Auto Post All Platforms 一部媒体で投稿失敗\", \"description\": \"失敗媒体: ${FAILED}\\n(他媒体は成功。全滅時は別途criticalでfailします)\\n[実行ログを開く](${RUN_URL})\", \"color\": 16776960, \"fields\": [{\"name\": \"発生時刻\", \"value\": \"${NOW_UTC}\", \"inline\": true}, {\"name\": \"IG / X / Threads\", \"value\": \"${IG_OUTCOME} / ${X_OUTCOME} / ${THREADS_OUTCOME}\", \"inline\": true}], \"footer\": {\"text\": \"GitHub Actions\"}}]}" \
+            -d "{\"username\": \"GitHub Actions Alert\", \"flags\": 4096, \"embeds\": [{\"title\": \"🟡 Auto Post All Platforms 一部媒体で投稿失敗\", \"description\": \"失敗媒体: ${FAILED}\\n(他媒体は成功。全滅時は別途criticalでfailします)\\n[実行ログを開く](${RUN_URL})\", \"color\": 16776960, \"fields\": [{\"name\": \"発生時刻\", \"value\": \"${NOW_UTC}\", \"inline\": true}, {\"name\": \"IG / X / Threads\", \"value\": \"${IG_OUTCOME} / ${X_OUTCOME} / ${THREADS_OUTCOME}\", \"inline\": true}], \"footer\": {\"text\": \"GitHub Actions\"}}]}" \
             "$DISCORD_WEBHOOK" > /dev/null || echo "⚠️ Discord warn通知失敗 (non-fatal)"
 
       - name: Fail if all platforms failed

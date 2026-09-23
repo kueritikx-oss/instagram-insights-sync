@@ -15,10 +15,36 @@ from datetime import datetime, timezone
 
 import requests
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import discord_ring  # noqa: E402
+
 REPO = os.environ.get("GITHUB_REPOSITORY", "kueritikx-oss/instagram-insights-sync")
 WORKFLOW = os.environ.get("GITHUB_WORKFLOW", "Unknown Workflow")
 RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
 RUN_URL = f"https://github.com/{REPO}/actions/runs/{RUN_ID}" if RUN_ID else f"https://github.com/{REPO}/actions"
+
+
+def previous_run_failed(gh_pat: str) -> bool:
+    """同じワークフローの1つ前の実行も失敗していたか。分からない時は False（=鳴らす側に倒す）。
+
+    auto-post-all は1時間ごとに走るので、壊れたままだと日中ずっと鳴り続ける。
+    連続失敗の2回目以降は置くだけにして、鳴るのは「壊れ始めた1回目」だけにする。
+    """
+    if not (gh_pat and RUN_ID):
+        return False
+    headers = {"Authorization": f"Bearer {gh_pat}", "Accept": "application/vnd.github+json"}
+    try:
+        cur = requests.get(f"https://api.github.com/repos/{REPO}/actions/runs/{RUN_ID}",
+                           headers=headers, timeout=10).json()
+        runs = requests.get(
+            f"https://api.github.com/repos/{REPO}/actions/workflows/{cur['workflow_id']}/runs",
+            headers=headers, params={"status": "completed", "per_page": 5}, timeout=10,
+        ).json().get("workflow_runs", [])
+        prev = [r for r in runs if str(r.get("id")) != str(RUN_ID)]
+        return bool(prev) and prev[0].get("conclusion") == "failure"
+    except Exception as e:
+        print(f"⚠️ 前回の実行結果を読めない（鳴らす側に倒す）: {e}", file=sys.stderr)
+        return False
 
 
 def send_discord(webhook_url: str) -> bool:
@@ -50,6 +76,10 @@ def send_discord(webhook_url: str) -> bool:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }]
     }
+    ring, why = discord_ring.ring_ok("critical")
+    if ring and previous_run_failed(os.environ.get("GH_PAT", "")):
+        ring, why = False, "連続失敗の2回目以降"
+    discord_ring.apply(payload, ring, why)
     try:
         r = requests.post(webhook_url, json=payload, timeout=10)
         r.raise_for_status()
