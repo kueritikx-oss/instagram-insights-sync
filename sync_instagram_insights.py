@@ -404,16 +404,19 @@ def fetch_insights(access_token: str, media_id: str, media_type: str) -> Optiona
                 if values and isinstance(values[0].get("value"), (int, float)):
                     result[name] = int(values[0]["value"])
         elif r.status_code == 400:
-            # reposts が非対応の場合、reposts を除いて再試行
-            fallback_metrics = [m for m in STANDARD_METRICS if m != "reposts"]
-            params["metric"] = ",".join(fallback_metrics)
-            r2 = requests.get(insights_url, params=params, timeout=30)
-            if r2.status_code == 200:
-                for item in r2.json().get("data", []):
-                    name = item.get("name")
-                    values = item.get("values", [])
-                    if values and isinstance(values[0].get("value"), (int, float)):
-                        result[name] = int(values[0]["value"])
+            # 非対応の指標があると全体が400になる。reposts → リールは profile_visits / follows も非対応
+            # （2026-10-20 実測: リール #3142 はこの400でリーチ・保存まで全部空欄だった）
+            drops = [{"reposts"}, {"reposts", "profile_visits", "follows"}]
+            for drop in drops:
+                params["metric"] = ",".join(m for m in STANDARD_METRICS if m not in drop)
+                r2 = requests.get(insights_url, params=params, timeout=30)
+                if r2.status_code == 200:
+                    for item in r2.json().get("data", []):
+                        name = item.get("name")
+                        values = item.get("values", [])
+                        if values and isinstance(values[0].get("value"), (int, float)):
+                            result[name] = int(values[0]["value"])
+                    break
     except requests.RequestException:
         pass
 
