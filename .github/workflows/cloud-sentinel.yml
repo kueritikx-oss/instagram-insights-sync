@@ -124,7 +124,7 @@ jobs:
                   )
                   _creds.refresh(_GARequest())
                   x_sheet_id = "1rHnDoMHUK_K0_f7MLxHltiU6Y2ATsz3ztKwdf2Zg8Hc"
-                  rng = urllib.parse.quote("'X投稿毎データ'!A1:R500", safe="")
+                  rng = urllib.parse.quote("'X投稿毎データ'!A1:R", safe="")
                   vals = get_json(
                       f"https://sheets.googleapis.com/v4/spreadsheets/{x_sheet_id}/values/{rng}",
                       {"Authorization": f"Bearer {_creds.token}"},
@@ -261,7 +261,7 @@ jobs:
                   # 2.6) IG ready滞留: 予定日時が6h以上過去なのに投稿ステータス=ready/retryのまま
                   try:
                       ig_sheet_id = "1xtEaMoZSWqrz7Z_fROS9QKgIHX3cydscVqLhQPckORg"
-                      vals = sheets_values(ig_sheet_id, "'Instagram投稿毎データ'!A1:CZ500")
+                      vals = sheets_values(ig_sheet_id, "'Instagram投稿毎データ'!A1:CZ")
                       hrows, drows = vals[:3], vals[3:]  # ヘッダー行1-3 / データA4以降
                       c_status = find_col_exact(hrows, "投稿ステータス")
                       c_date = find_col_exact(hrows, "日付")
@@ -291,7 +291,7 @@ jobs:
                   # 2.7) Threadsサイレント失敗: 予定日時が6h以上過去なのにstatusが投稿完了になっていない
                   try:
                       th_sheet_id = "1hdBlZBn9s688f1ZwkTiO3suY27tJEHtXMEPkopLdBNI"
-                      vals = sheets_values(th_sheet_id, "'Threads投稿毎データ'!A1:AZ500")
+                      vals = sheets_values(th_sheet_id, "'Threads投稿毎データ'!A1:AZ")
                       hrows, drows = vals[:3], vals[3:]
                       c_status = find_col_exact(hrows, "投稿ステータス")
                       c_date = find_col_exact(hrows, "日付")
@@ -324,7 +324,7 @@ jobs:
                   #   公開日+時間列で表現される。保留のみ対象外。古い行の恒久アラート化を防ぐため24h窓。
                   try:
                       note_sheet_id = "1gIW_SCigwa5wFPnQVRoFM3EhOaYC3aC_DtkMbqK8gRw"
-                      vals = sheets_values(note_sheet_id, "'記事一覧'!A1:AC100")
+                      vals = sheets_values(note_sheet_id, "'記事一覧'!A1:AC")
                       hrows, drows = vals[:1], vals[1:]  # ヘッダー行1 / データ行2以降
                       c_status = find_col_exact(hrows, "ステータス")
                       c_date = find_col_exact(hrows, "公開日")
