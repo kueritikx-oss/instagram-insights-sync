@@ -40,6 +40,14 @@ from datetime import date, datetime, timedelta, timezone
 
 import requests
 
+# Sheets の一時障害(503/429/socket断)で投稿の読み書きが1発で落ちないようにする。
+# 正本: utils/sheet_column_map.py の execute_with_retry (10/20/40/80秒バックオフ)
+try:
+    from sheet_column_map import execute_with_retry as _execute_with_retry  # noqa: E402
+except ImportError:  # 単体チェックアウトで未配置なら従来どおり1発実行
+    def _execute_with_retry(request, label: str = ""):
+        return request.execute()
+
 # ---------------------------------------------------------------------------
 # Config (GitHub Actions: env vars / Local: config file)
 # ---------------------------------------------------------------------------
@@ -265,10 +273,13 @@ def refresh_columns_from_header(service) -> dict:
 def _set_thumbnail_after_post(sheets_service, access_token, ig_user_id,
                               media_id, row_num):
     """投稿直後にB列サムネを永続URL優先で復旧する。"""
-    cr_res = sheets_service.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!{col_letter(COL_IMAGE_URLS)}{row_num}",
-    ).execute()
+    cr_res = _execute_with_retry(
+        sheets_service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!{col_letter(COL_IMAGE_URLS)}{row_num}",
+        ),
+        label=f"_set_thumbnail_after_post read row {row_num}",
+    )
     cr_vals = cr_res.get("values", [[]])[0] if cr_res.get("values") else []
     cr_raw = cr_vals[0] if cr_vals else ""
 
@@ -304,12 +315,15 @@ def _set_thumbnail_after_post(sheets_service, access_token, ig_user_id,
     if not cover_url:
         return
 
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!B{row_num}",
-        valueInputOption="USER_ENTERED",
-        body={"values": [[f'=IMAGE("{cover_url}")']]},
-    ).execute()
+    _execute_with_retry(
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!B{row_num}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[f'=IMAGE("{cover_url}")']]},
+        ),
+        label=f"_set_thumbnail_after_post write B{row_num}",
+    )
     src = "GitHub永続URL" if "githubusercontent" in cover_url else "CDN(一時)"
     print(f"  ✓ サムネB列を設定済み ({src})")
 
@@ -317,10 +331,13 @@ def _set_thumbnail_after_post(sheets_service, access_token, ig_user_id,
 def read_all_rows(service):
     # 読取範囲は COL_LAST_ATTEMPT より右まで読めば OK
     end_col = col_letter(max(COL_LAST_ATTEMPT + 3, 100))  # バッファ含めて少し広め
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A4:{end_col}500",
-    ).execute()
+    result = _execute_with_retry(
+        service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A4:{end_col}500",
+        ),
+        label=f"read_all_rows A4:{end_col}500",
+    )
     return result.get("values", [])
 
 
@@ -330,10 +347,13 @@ def write_cells(service, updates):
         return
     data = [{"range": f"{SHEET_NAME}!{cell}", "values": [[val]]}
             for cell, val in updates]
-    service.spreadsheets().values().batchUpdate(
-        spreadsheetId=SHEET_ID,
-        body={"valueInputOption": "USER_ENTERED", "data": data},
-    ).execute()
+    _execute_with_retry(
+        service.spreadsheets().values().batchUpdate(
+            spreadsheetId=SHEET_ID,
+            body={"valueInputOption": "USER_ENTERED", "data": data},
+        ),
+        label=f"write_cells {len(data)}件",
+    )
 
 
 def append_step_summary(lines):
@@ -371,10 +391,13 @@ def update_post_status(service, row_num, status, media_id="", error="",
 def read_row(service, row_num):
     """Read one sheet row after status changes."""
     end_col = col_letter(max(COL_LAST_ATTEMPT + 3, 100))
-    result = service.spreadsheets().values().get(
-        spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A{row_num}:{end_col}{row_num}",
-    ).execute()
+    result = _execute_with_retry(
+        service.spreadsheets().values().get(
+            spreadsheetId=SHEET_ID,
+            range=f"{SHEET_NAME}!A{row_num}:{end_col}{row_num}",
+        ),
+        label=f"read_row {row_num}",
+    )
     rows = result.get("values", [])
     return rows[0] if rows else []
 
