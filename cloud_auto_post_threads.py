@@ -573,7 +573,7 @@ def is_within_window(scheduled: datetime, now: datetime, window_minutes: int) ->
 
 def find_ready_posts(service, now: datetime, window_minutes: int) -> list:
     """投稿可能な行を検索"""
-    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
     ready = []
 
     for i, row in enumerate(rows):
@@ -606,7 +606,7 @@ def find_ready_posts(service, now: datetime, window_minutes: int) -> list:
 
 def find_post_by_num(service, post_num: str) -> dict | None:
     """投稿番号で行を検索"""
-    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    rows = read_sheet_data(service, f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
 
     for i, row in enumerate(rows):
         actual_row = DATA_START_ROW + i

@@ -176,7 +176,7 @@ def get_sheets_service():
 
 def read_sheet_data(service) -> list:
     """スプレッドシートから全データ行を読み取る"""
-    range_str = f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500"
+    range_str = f"{THREADS_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}"
     result = service.spreadsheets().values().get(
         spreadsheetId=THREADS_SPREADSHEET_ID,
         range=range_str,

@@ -478,7 +478,7 @@ def is_within_window(scheduled, now, window_minutes):
 # ── メイン処理 ────────────────────────────────────────────────────────
 
 def find_ready_posts(service, now, window_minutes):
-    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
     ready = []
     for i, row in enumerate(rows):
         actual_row = DATA_START_ROW + i
@@ -501,7 +501,7 @@ def find_ready_posts(service, now, window_minutes):
 
 
 def find_post_by_num(service, post_num):
-    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
     for i, row in enumerate(rows):
         if get_col_value(row, COL_POST_NUM) == post_num:
             return {"row": DATA_START_ROW + i, "data": row, "post_num": post_num}
@@ -509,7 +509,7 @@ def find_post_by_num(service, post_num):
 
 
 def count_posts_today(service, now):
-    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
     today_str = now.strftime("%Y-%m-%d")
     return sum(1 for r in rows if get_col_value(r, COL_STATUS) == "posted"
                and get_col_value(r, COL_LAST_ATTEMPT).startswith(today_str))
@@ -679,7 +679,7 @@ async def backfill_tweet_ids(service, client: TwikitClient,
         スケジュール日時の差が36時間以内の候補だけ採用（最近接優先）
       - 既にシート上の他行で使われているtweet_idは割り当てない
     """
-    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}500")
+    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
     used_ids = set()
     targets = []
     for i, row in enumerate(rows):
