@@ -24,10 +24,23 @@ _tx_mod.ON_DEMAND_FILE_REGEX = _re.compile(
 _tx_mod.ON_DEMAND_HASH_PATTERN = r',{}:"([0-9a-f]+)"'
 _tx_mod.INDICES_REGEX = _re.compile(r"\[(\d+)\],\s*16")
 
+class XAccountLocked(Exception):
+    """Xがアカウントを一時ロック中（x.com が /account/access へ飛ばす）。
+
+    コードでは直せない。本人がXにログインして解除するまで、投稿は全部失敗する。
+    2026-11-10: これを「Couldn't get KEY_BYTE indices」と表示していたため、
+    twikitの署名が壊れたように見えていた（実際はロックで、トップが63バイトの転送文だった）。
+    """
+
+
 async def _patched_get_indices(self, home_page_response, session, headers):
     key_byte_indices = []
     response = self.validate_response(home_page_response) or self.home_page_response
     response_str = str(response)
+    if "/account/access" in response_str and len(response_str) < 5000:
+        raise XAccountLocked(
+            "X account is locked (x.com redirects to /account/access). "
+            "Xにログインしてロックを解除してください")
     on_demand_file = _tx_mod.ON_DEMAND_FILE_REGEX.search(response_str)
     if on_demand_file:
         idx = on_demand_file.group(1)
@@ -39,7 +52,10 @@ async def _patched_get_indices(self, home_page_response, session, headers):
             for item in _tx_mod.INDICES_REGEX.finditer(str(resp.text)):
                 key_byte_indices.append(item.group(1))
     if not key_byte_indices:
-        raise Exception("Couldn't get KEY_BYTE indices")
+        # 次に壊れた時に原因が分かるよう、トップページの様子を添える
+        raise Exception(
+            "Couldn't get KEY_BYTE indices "
+            f"(home={len(response_str)}B, ondemand.s={'yes' if on_demand_file else 'no'})")
     key_byte_indices = list(map(int, key_byte_indices))
     return key_byte_indices[0], key_byte_indices[1:]
 
@@ -282,6 +298,29 @@ async def get_twikit_client() -> TwikitClient:
     print("❌ FATAL: Twitter Cookieが見つかりません")
     print("   ローカルで setup_x_twikit_cookies.py を実行してCookieを生成してください")
     sys.exit(1)
+
+
+def _conflict_safe_get_cookies(self) -> dict:
+    """同じ名前のCookieが複数ドメインにあっても落ちない get_cookies。
+
+    x.com と twitter.com の両方が __cf_bm を配ると、twikit の dict(self.http.cookies) が
+    httpx.CookieConflict で落ちる（2026-11-10 のステップ exit 1 の原因）。
+    同名は x.com 側を優先して1つにする。
+    """
+    out, from_x = {}, set()
+    for c in self.http.cookies.jar:
+        is_x = (c.domain or "").lstrip(".").endswith("x.com")
+        if c.name not in out or (is_x and c.name not in from_x):
+            out[c.name] = c.value
+            if is_x:
+                from_x.add(c.name)
+    return out
+
+
+TwikitClient.get_cookies = _conflict_safe_get_cookies
+
+# この実行でアカウントロックを検知したか（検知したら残りの行は試さない）
+_account_locked = False
 
 
 def save_cookies(client: TwikitClient):
@@ -633,6 +672,18 @@ async def execute_post(service, client: TwikitClient, post_info,
         print(f"  ⚠️ 重複ツイート: {post_num} → skip")
         return False
 
+    except XAccountLocked as e:
+        # ロック中は何度やっても同じ。リトライ回数を使わず ready のまま残し、解除後に拾えるようにする
+        global _account_locked
+        _account_locked = True
+        batch_update_cells(service, [
+            (row, COL_STATUS, "ready"),
+            (row, COL_ERROR, f"[locked] {str(e)[:200]}"),
+            (row, COL_LAST_ATTEMPT, now_str),
+        ])
+        print(f"  🔒 アカウントロック中: {post_num} → ready のまま")
+        return False
+
     except Exception as e:
         error_msg = str(e)[:500]
 
@@ -771,6 +822,17 @@ async def backfill_tweet_ids(service, client: TwikitClient,
               + ", ".join(t["post_num"] for t in unmatched))
 
 
+def _exit_if_locked():
+    """ロックを検知していたら、理由をはっきり出して異常終了する（Cookieは書き戻さない）。"""
+    if not _account_locked:
+        return
+    print()
+    print("🔒 X アカウントが一時ロック中です（x.com → /account/access）")
+    print("   対処: ブラウザで X にログインし、表示される確認を済ませてロックを解除する")
+    print("   投稿待ちの行は ready のまま残しました。解除後の回で自動的に投稿されます")
+    sys.exit(1)
+
+
 async def async_main(args):
     now = datetime.now(JST)
     print(f"🐦 X自動投稿 (twikit) - {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
@@ -808,6 +870,7 @@ async def async_main(args):
             return
         client = None if args.dry_run else await get_twikit_client()
         await execute_post(service, client, post_info, dry_run=args.dry_run)
+        _exit_if_locked()
         if client:
             save_cookies(client)
         return
@@ -828,10 +891,14 @@ async def async_main(args):
             break
         success = await execute_post(service, client, post_info,
                                      dry_run=args.dry_run)
+        if _account_locked:
+            break
         if success:
             posted += 1
             if posted < len(ready):
                 await asyncio.sleep(POST_GAP_SECONDS)
+
+    _exit_if_locked()
 
     # Cookie保存（ct0ローテーション対応）
     if client:
