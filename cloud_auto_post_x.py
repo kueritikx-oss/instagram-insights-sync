@@ -33,6 +33,15 @@ class XAccountLocked(Exception):
     """
 
 
+class XTweetNotCreated(Exception):
+    """Xが投稿の要求にエラーを返さないまま、ポストを作らなかった（黙って落とした）。
+
+    2026-11-10: ロック解除直後の回で X-506・X-507 がこれに当たった。応答の
+    tweet_results が空で、タイムラインにも無いのに、例外が出ないことを「成功」と
+    読んでシートを posted にしていた（実際には1本も出ていなかった）。
+    """
+
+
 async def _patched_get_indices(self, home_page_response, session, headers):
     key_byte_indices = []
     response = self.validate_response(home_page_response) or self.home_page_response
@@ -321,6 +330,8 @@ TwikitClient.get_cookies = _conflict_safe_get_cookies
 
 # この実行でアカウントロックを検知したか（検知したら残りの行は試さない）
 _account_locked = False
+# この実行で「エラーなしでポストが作られなかった」を検知したか（同上）
+_silently_dropped = False
 
 
 def save_cookies(client: TwikitClient):
@@ -366,9 +377,64 @@ async def twikit_upload_media(client: TwikitClient, image_url: str) -> str:
     return media_id
 
 
+# 直近の create_tweet の生応答（IDが取れなかった時に、原因を残すため）
+_last_create_tweet_response = None
+
+
+def _install_create_tweet_probe(client) -> None:
+    """client.gql.create_tweet を包んで、Xの生応答を控える（1クライアント1回だけ）。"""
+    gql = getattr(client, 'gql', None)
+    orig = getattr(gql, 'create_tweet', None)
+    if gql is None or orig is None or getattr(orig, '_probe', False):
+        return
+
+    async def _probed(*args, **kwargs):
+        global _last_create_tweet_response
+        _last_create_tweet_response = None
+        result = await orig(*args, **kwargs)
+        _last_create_tweet_response = result[0] if isinstance(result, tuple) else result
+        return result
+
+    _probed._probe = True
+    try:
+        gql.create_tweet = _probed
+    except Exception:
+        pass
+
+
+def create_tweet_response_is_empty(response) -> bool | None:
+    """Xがポストを作らなかった応答か。True=作っていない / False=作った / None=判定できない"""
+    if not isinstance(response, dict):
+        return None
+    data = response.get('data')
+    if not isinstance(data, dict):
+        return None
+    node = data.get('create_tweet') or data.get('notetweet_create')
+    if node is None:
+        return True if not data else None
+    if not isinstance(node, dict):
+        return None
+    results = node.get('tweet_results')
+    if not (isinstance(results, dict) and results.get('result')):
+        return True
+    return False
+
+
+def summarize_create_tweet_response(response, limit: int = 300) -> str:
+    """生応答を1行に縮める（エラー欄・ログ用）"""
+    if response is None:
+        return "response=なし"
+    try:
+        body = json.dumps(response, ensure_ascii=False, separators=(',', ':'))
+    except (TypeError, ValueError):
+        body = repr(response)
+    return f"response={body[:limit]}"
+
+
 async def twikit_post_tweet(client: TwikitClient, text: str,
                             media_ids=None, reply_to=None):
     """ツイートを投稿。226エラーは最大3回リトライ（2-5秒間隔）"""
+    _install_create_tweet_probe(client)
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -443,28 +509,43 @@ async def get_own_user_id(client: TwikitClient) -> str | None:
         return None
 
 
-async def resolve_tweet_id_from_timeline(client: TwikitClient, text: str,
-                                         max_pages: int = 2) -> str | None:
-    """投稿直後にIDが取れなかった場合、自分の直近ツイートを本文照合して回収"""
+async def lookup_tweet_in_timeline(client: TwikitClient, text: str,
+                                   max_pages: int = 2) -> tuple[str | None, bool]:
+    """自分の直近ツイートを本文照合する。(tweet_id, 照合できたか) を返す。
+
+    (None, True)  = タイムラインは読めたが、その本文のポストは無い
+    (None, False) = タイムラインを読めなかった（有無は分からない）
+    """
     try:
         user_id = await get_own_user_id(client)
         if not user_id:
-            return None
+            return None, False
         tweets = await client.get_user_tweets(user_id, 'Tweets', count=20)
         target = _norm_tweet_text(text)[:40]
         if not target:
-            return None
+            return None, False
+        seen = 0
         for _ in range(max_pages):
             for tw in tweets:
+                seen += 1
                 body = getattr(tw, 'full_text', None) or getattr(tw, 'text', '') or ''
                 if _norm_tweet_text(body)[:40] == target:
-                    return str(tw.id)
+                    return str(tw.id), True
             tweets = await tweets.next()
             if not tweets:
                 break
+        # 1件も読めていない時は「無い」と言い切らない
+        return None, seen > 0
     except Exception as e:
         print(f"  ⚠️ タイムライン照合失敗: {str(e)[:100]}")
-    return None
+    return None, False
+
+
+async def resolve_tweet_id_from_timeline(client: TwikitClient, text: str,
+                                         max_pages: int = 2) -> str | None:
+    """投稿直後にIDが取れなかった場合、自分の直近ツイートを本文照合して回収"""
+    tweet_id, _ = await lookup_tweet_in_timeline(client, text, max_pages)
+    return tweet_id
 
 
 # ── スケジュール判定 ──────────────────────────────────────────────────
@@ -615,14 +696,22 @@ async def execute_post(service, client: TwikitClient, post_info,
         if not tweet_id:
             print(f"  ⚠️ 応答からtweet_id取得失敗 → タイムライン照合中...")
             await asyncio.sleep(5)  # 反映待ち
-            tweet_id = await resolve_tweet_id_from_timeline(client, text)
+            tweet_id, timeline_checked = await lookup_tweet_in_timeline(client, text)
+            if not tweet_id:
+                empty = create_tweet_response_is_empty(_last_create_tweet_response)
+                summary = summarize_create_tweet_response(_last_create_tweet_response)
+                print(f"  🔎 create_tweet {summary}")
+                # 応答が空（Xが作っていない）か、タイムラインを読めて無い → 出ていない
+                if empty is True or (timeline_checked and empty is not False):
+                    raise XTweetNotCreated(summary)
 
         if tweet_id:
             tweet_url = f"https://x.com/{X_SCREEN_NAME}/status/{tweet_id}"
             error_note = ""
         else:
-            # 投稿自体は成功している（create_tweetが例外を出していない）ので
-            # postedにするが、ID欠落を必ずエラー欄に残して黙殺しない
+            # ここに来るのは「応答にはポストがあるがIDを読めず、タイムラインも
+            # 確かめられなかった」時だけ。二重投稿を避けるため posted にするが、
+            # ID欠落を必ずエラー欄に残して黙殺しない
             tweet_id = ""
             tweet_url = f"https://x.com/{X_SCREEN_NAME}"
             error_note = "[id-missing] 投稿成功だがtweet_id取得失敗。--backfill-ids で回収可"
@@ -682,6 +771,27 @@ async def execute_post(service, client: TwikitClient, post_info,
             (row, COL_LAST_ATTEMPT, now_str),
         ])
         print(f"  🔒 アカウントロック中: {post_num} → ready のまま")
+        return False
+
+    except XTweetNotCreated as e:
+        # Xが黙って落とした。posted にしない。続けて試すと同じ結果を重ねるので、
+        # この回は止める。回数は数える（MAX_RETRIES で failed）
+        global _silently_dropped
+        _silently_dropped = True
+        retry_count = 0
+        try:
+            retry_count = int(get_col_value(data, COL_RETRY) or "0")
+        except (ValueError, IndexError):
+            pass
+        retry_count += 1
+        new_status = "retry" if retry_count < MAX_RETRIES else "failed"
+        batch_update_cells(service, [
+            (row, COL_STATUS, new_status),
+            (row, COL_ERROR, f"[not-created] Xがポストを作らなかった {str(e)[:350]}"),
+            (row, COL_RETRY, str(retry_count)),
+            (row, COL_LAST_ATTEMPT, now_str),
+        ])
+        print(f"  ❌ Xがポストを作らなかった: {post_num} ({new_status})")
         return False
 
     except Exception as e:
@@ -833,6 +943,17 @@ def _exit_if_locked():
     sys.exit(1)
 
 
+def _exit_if_silently_dropped():
+    """Xが黙ってポストを落としていたら、理由を出して異常終了する（成功に見せない）。"""
+    if not _silently_dropped:
+        return
+    print()
+    print("❌ X が投稿の要求にエラーを返さないまま、ポストを作りませんでした")
+    print("   シートは posted にしていません（retry / failed）。応答は上の 🔎 の行とエラー欄にあります")
+    print("   確認: X のプロフィール画面で最新ポストの日時を見る")
+    sys.exit(1)
+
+
 async def async_main(args):
     now = datetime.now(JST)
     print(f"🐦 X自動投稿 (twikit) - {now.strftime('%Y-%m-%d %H:%M:%S')} JST")
@@ -873,6 +994,7 @@ async def async_main(args):
         _exit_if_locked()
         if client:
             save_cookies(client)
+        _exit_if_silently_dropped()
         return
 
     # スケジュール投稿
@@ -891,7 +1013,7 @@ async def async_main(args):
             break
         success = await execute_post(service, client, post_info,
                                      dry_run=args.dry_run)
-        if _account_locked:
+        if _account_locked or _silently_dropped:
             break
         if success:
             posted += 1
@@ -903,6 +1025,8 @@ async def async_main(args):
     # Cookie保存（ct0ローテーション対応）
     if client:
         save_cookies(client)
+
+    _exit_if_silently_dropped()
 
     print()
     print(f"🎉 完了: {posted}/{len(ready)}件を投稿")
