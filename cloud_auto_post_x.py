@@ -180,7 +180,11 @@ SHEET_READ_END_COL = _col_idx_to_letter(_MAX_COL_IDX)
 # 制限・設定
 MAX_RETRIES = 3
 POST_GAP_SECONDS = 30
-DAILY_POST_LIMIT = int(os.environ.get("X_DAILY_LIMIT", "10"))
+DAILY_POST_LIMIT = int(os.environ.get("X_DAILY_LIMIT", "4"))  # 2026-11-11: 10→4（予定は1日4枠。ロック再発防止）
+# 2026-11-11 Xロック再発防止: 本人が解除した直後、溜まっていた行を 21:47・21:48 と1分で2本出していた。
+#   1回の実行で出すのは1本まで・前の投稿から最低90分空ける（残りは次の回へ）
+MAX_POSTS_PER_RUN = int(os.environ.get("X_MAX_PER_RUN", "1"))
+MIN_GAP_MINUTES = int(os.environ.get("X_MIN_GAP_MINUTES", "90"))
 MAX_TWEET_CHARS = 280
 MAX_IMAGES_PER_TWEET = 4
 JST = timezone(timedelta(hours=9))
@@ -628,6 +632,22 @@ def find_post_by_num(service, post_num):
     return None
 
 
+def minutes_since_last_post(service, now):
+    """シートで最後に posted になった時刻から何分たったか（無ければ None）"""
+    rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
+    latest = None
+    for r in rows:
+        if get_col_value(r, COL_STATUS) != "posted":
+            continue
+        m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})", get_col_value(r, COL_LAST_ATTEMPT))
+        if not m:
+            continue
+        t = datetime(*map(int, m.groups()), tzinfo=JST)
+        if latest is None or t > latest:
+            latest = t
+    return None if latest is None else (now - latest).total_seconds() / 60
+
+
 def count_posts_today(service, now):
     rows = read_sheet_data(service, f"{X_SHEET_NAME}!A{DATA_START_ROW}:{SHEET_READ_END_COL}")
     today_str = now.strftime("%Y-%m-%d")
@@ -1004,6 +1024,11 @@ async def async_main(args):
         return
 
     print(f"📋 {len(ready)}件の投稿を検出")
+    if not args.dry_run:
+        gap = minutes_since_last_post(service, now)
+        if gap is not None and gap < MIN_GAP_MINUTES:
+            print(f"⏸ 前の投稿から {gap:.0f}分（{MIN_GAP_MINUTES}分空ける決まり）→ 今回は出さず次の回へ")
+            return
     client = None if args.dry_run else await get_twikit_client()
     posted = 0
 
@@ -1017,6 +1042,10 @@ async def async_main(args):
             break
         if success:
             posted += 1
+            if posted >= MAX_POSTS_PER_RUN:
+                if posted < len(ready):
+                    print(f"⏸ 1回の実行は{MAX_POSTS_PER_RUN}本まで → 残り{len(ready) - posted}件は次の回へ")
+                break
             if posted < len(ready):
                 await asyncio.sleep(POST_GAP_SECONDS)
 

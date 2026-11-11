@@ -86,6 +86,8 @@ jobs:
 
       - name: Post to X
         id: x
+        # 2026-11-11 止めるスイッチ: リポジトリ変数 X_AUTOPOST=off でXだけ止まる（IG・Threadsは動く）
+        if: vars.X_AUTOPOST != 'off'
         continue-on-error: true
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
