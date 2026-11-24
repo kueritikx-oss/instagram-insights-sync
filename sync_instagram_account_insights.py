@@ -367,14 +367,65 @@ def append_row(sheets_service, sheet_id: str, tab_name: str, row_data: List[Any]
     ).execute(num_retries=SHEETS_API_RETRIES)
 
 
+def _normalize_sheet_date(value: Any) -> Optional[str]:
+    """A列の日付を 'YYYY-MM-DD' にそろえる。
+
+    書き込みは USER_ENTERED の '2026-11-24' だが、Sheets が日付シリアルに変換し、
+    列の表示形式が数値のため読み返すと '46350' になる。文字列のまま比べると一致せず、
+    重複チェックが効かずに同じ日の行が二重に入っていた（2026-11-23 に2行・2026-11-25 発覚）。
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return (datetime(1899, 12, 30) + timedelta(days=int(value))).strftime("%Y-%m-%d")
+    text = str(value).strip().lstrip("'")
+    if re.fullmatch(r"\d{5}(\.\d+)?", text):
+        return (datetime(1899, 12, 30) + timedelta(days=int(float(text)))).strftime("%Y-%m-%d")
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(text[:10], fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return text or None
+
+
+def get_existing_date_rows(sheets_service, sheet_id: str, tab_name: str) -> Optional[Dict[str, int]]:
+    """A列の日付(ISO) → その日付の最後の行番号(1始まり)。読めなければ None。"""
+    try:
+        resp = sheets_service.spreadsheets().values().get(
+            spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
+            valueRenderOption="UNFORMATTED_VALUE",
+        ).execute(num_retries=SHEETS_API_RETRIES)
+    except Exception as e:
+        print(f"  ⚠️ {tab_name} の既存日付を読めず: {e}", file=sys.stderr)
+        return None
+    out: Dict[str, int] = {}
+    for idx, row in enumerate(resp.get("values", []), start=1):
+        if not row:
+            continue
+        iso = _normalize_sheet_date(row[0])
+        if iso:
+            out[iso] = idx
+    return out
+
+
 def get_existing_dates(sheets_service, sheet_id: str, tab_name: str) -> set:
     try:
         resp = sheets_service.spreadsheets().values().get(
             spreadsheetId=sheet_id, range=f"'{tab_name}'!A:A",
+            valueRenderOption="UNFORMATTED_VALUE",
         ).execute(num_retries=SHEETS_API_RETRIES)
-        return {row[0] for row in resp.get("values", []) if row}
-    except Exception:
+    except Exception as e:
+        print(f"  ⚠️ {tab_name} の既存日付を読めず（重複チェックなしで続行）: {e}", file=sys.stderr)
         return set()
+    out = set()
+    for row in resp.get("values", []):
+        if not row:
+            continue
+        iso = _normalize_sheet_date(row[0])
+        if iso:
+            out.add(iso)
+    return out
 
 
 # ========== Instagram API ==========
@@ -740,8 +791,13 @@ def write_to_weekly_sheet(
     return True
 
 
-def write_to_detail_daily(sheets_service, data: Dict[str, Any]) -> None:
-    """詳細日次タブに書き込み"""
+def write_to_detail_daily(sheets_service, data: Dict[str, Any], existing_row: Optional[int] = None) -> None:
+    """詳細日次タブに書き込み。同じ日の行があれば足さずにその行を上書きする。
+
+    IGのアカウント指標は翌朝より昼の方が大きい（その日の数字がまだ確定していない）。
+    以前は「既にあればスキップ」だったため、最初に書かれた小さい値で固まるか、
+    重複チェックが効かず2行目が足されていた。上書きなら1日1行で最新値になる。
+    """
     # follows APIが空データセットの場合、偽の0ではなく空セルにする
     # （純増だけは差分推定できていれば書く）
     if data.get("_follows_data_missing"):
@@ -768,7 +824,17 @@ def write_to_detail_daily(sheets_service, data: Dict[str, Any]) -> None:
         data["reach_feed"], data["reach_reels"], data["reach_story"],
         datetime.now(timezone.utc).isoformat(),
     ]
-    append_row(sheets_service, POSTDATA_SHEET_ID, DETAIL_DAILY_TAB, row_data)
+    if existing_row:
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=POSTDATA_SHEET_ID,
+            range=f"'{DETAIL_DAILY_TAB}'!A{existing_row}",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row_data]},
+        ).execute(num_retries=SHEETS_API_RETRIES)
+        print(f"    → 詳細タブ Row {existing_row}: 上書き（{data['date_str']}）")
+    else:
+        append_row(sheets_service, POSTDATA_SHEET_ID, DETAIL_DAILY_TAB, row_data)
+        print(f"    → 詳細タブ: 追記（{data['date_str']}）")
 
 
 # ========== 週次集計 ==========
@@ -830,7 +896,10 @@ def main() -> None:
         )
 
     # 既存詳細タブの日付チェック
-    existing_detail = get_existing_dates(sheets_service, POSTDATA_SHEET_ID, DETAIL_DAILY_TAB)
+    existing_detail_rows = get_existing_date_rows(sheets_service, POSTDATA_SHEET_ID, DETAIL_DAILY_TAB)
+    if existing_detail_rows is None:
+        # 既存行が読めないまま追記すると二重行になる → 詳細タブへの書き込みは見送る
+        print("  🔴 詳細タブの既存日付を読めないため、詳細タブへの書き込みは見送る", file=sys.stderr)
 
     # ---- 日次データ取得 ----
     print(f"\n--- 日次データ取得（{args.days}日分）---")
@@ -843,11 +912,6 @@ def main() -> None:
     for i in range(args.days):
         target = target_base - timedelta(days=i)
         date_str = target.strftime("%Y-%m-%d")
-
-        if date_str in existing_detail:
-            print(f"  {date_str}: 詳細タブに既存 — スキップ")
-            skipped += 1
-            continue
 
         data = collect_daily_data(access_token, ig_user_id, target)
 
@@ -867,8 +931,17 @@ def main() -> None:
         if not write_to_daily_sheet(sheets_service, target, data):
             daily_write_failed += 1
 
-        # 2. 詳細日次タブに書き込み
-        write_to_detail_daily(sheets_service, data)
+        # 2. 詳細日次タブに書き込み（同じ日の行があれば上書き）
+        existing_row = (existing_detail_rows or {}).get(date_str)
+        if existing_detail_rows is None:
+            skipped += 1
+            continue
+        if existing_row and data.get("_api_errors"):
+            # 一部の指標が取れていない回で、確定済みの行を欠けた値で上書きしない
+            print(f"    ⚠️ {date_str}: APIエラー {data['_api_errors']} 件 → 既存行 Row {existing_row} は上書きせず残す", file=sys.stderr)
+            skipped += 1
+            continue
+        write_to_detail_daily(sheets_service, data, existing_row)
         written += 1
 
     # ---- バックフィル（欠損自動検知→再取得）----
