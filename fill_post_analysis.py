@@ -855,7 +855,7 @@ def main():
     # 全データ取得（1日後 + 1週間後 + メタデータ）
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
-        range=f"'{SHEET_NAME}'!A4:CT500",  # 2026-07-10: e1dd06a(220→500行)の直し漏れ。220のままだと行221以降の投稿に考察が永久生成されない
+        range=f"'{SHEET_NAME}'!A4:CT",  # 2026-11-25: 終端行を外した（500固定で行501以降が無言スキップ）。旧注記:   # 2026-07-10: e1dd06a(220→500行)の直し漏れ。220のままだと行221以降の投稿に考察が永久生成されない
     ).execute(num_retries=SHEETS_API_RETRIES)
     raw_rows = result.get("values", [])
     print(f"📊 {len(raw_rows)}行を読み込み")

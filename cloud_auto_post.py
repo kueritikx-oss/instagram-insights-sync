@@ -319,7 +319,7 @@ def read_all_rows(service):
     end_col = col_letter(max(COL_LAST_ATTEMPT + 3, 100))  # バッファ含めて少し広め
     result = service.spreadsheets().values().get(
         spreadsheetId=SHEET_ID,
-        range=f"{SHEET_NAME}!A4:{end_col}500",
+        range=f"{SHEET_NAME}!A4:{end_col}",  # 2026-11-25: 終端行を書かない（500固定だと行501以降=11/25以降の予約が見えず投稿が止まった）
     ).execute()
     return result.get("values", [])
 
