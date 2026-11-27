@@ -136,7 +136,7 @@ def select_top_posts(service, top_n: int = 30) -> list:
     """IG投稿毎データからTOP N投稿を選定"""
     rows = service.spreadsheets().values().get(
         spreadsheetId=IG_SPREADSHEET_ID,
-        range=f"{IG_SHEET_NAME}!A{IG_DATA_START_ROW}:CT500",
+        range=f"{IG_SHEET_NAME}!A{IG_DATA_START_ROW}:CT",  # 2026-11-25: 終端行を外した
     ).execute().get("values", [])
 
     scored = []
